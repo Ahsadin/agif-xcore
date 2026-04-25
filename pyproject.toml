@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agif-xcore"
+version = "1.0.0"
+description = "Model-agnostic governance sidecar for LLMs. Attaches to any backend; produces natural-language answers plus a replayable trace envelope."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Danish Z. Khan" },
+]
+requires-python = ">=3.10"
+keywords = ["llm", "governance", "hallucination", "rag", "ollama", "openai", "anthropic", "trace"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# M1 has ZERO runtime dependencies. Everything runs on Python stdlib.
+# Later milestones pull in:
+#   M2: rank-bm25, pypdf, python-docx, pyyaml (grounding + policies)
+#   M3: starlette, uvicorn, anthropic-sdk (proxy + remote backends)
+#   M4: (none new — AGIFCore memory ports are pure stdlib)
+#   M5: onnxruntime, sentence-transformers (optional extras)
+dependencies = []
+
+[project.optional-dependencies]
+# Reserved for M2+; not needed for M1.
+grounding = [
+  "rank-bm25>=0.2.2",
+  "pypdf>=4.0",
+  "python-docx>=1.1",
+  "pyyaml>=6.0",
+]
+proxy = [
+  "starlette>=0.37",
+  "uvicorn>=0.29",
+]
+anthropic = [
+  "anthropic>=0.34",
+]
+onnx = [
+  "onnxruntime>=1.17",
+  "onnxruntime-genai>=0.3; platform_machine != 'aarch64'",
+]
+vector = [
+  "sentence-transformers>=2.7",
+  "numpy>=1.24",
+]
+dev = [
+  "respx>=0.21",
+  "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Danish-Z-Khan/agif-xcore"
+Issues = "https://github.com/Danish-Z-Khan/agif-xcore/issues"
+
+[project.scripts]
+agif-xcore = "agif_xcore.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agif_xcore = ["py.typed"]
