@@ -203,13 +203,13 @@ The `trace_id` of the audit event matches `x_agif_trace.trace_id` returned to th
 
 ## Out of scope for v0.2
 
-- **Tool execution.** Always at the client.
-- **`soften` decisions.** The substrate already emits `soften`; v0.2 treats it as `block` for response purposes (no soften wrapper). Plumbed through trace for forward-compatibility with v0.3.
-- **Argument-content analysis.** v0.2 governs by tool name only.
-- **ONNX and Anthropic backends.** They raise `BackendError("tools not supported by this backend in v0.2")` if `tools` is non-empty. Use `ollama` or `openai_compat`.
-- **Streaming tool_calls.** Single-event SSE fallback only.
-- **Generic-proxy tool governance.** The substrate-routed path is OpenClaw-profile only.
-- **Live tool-capable upstream model** is not required for the v0.2 tag; tag gating uses stub-tests. A live validation report is post-tag follow-up.
+- **Tool execution.** Always at the client. (Still true in v0.3.)
+- **`soften` decisions.** The substrate already emits `soften`; v0.2 treats it as `block` for response purposes. **Now in v0.3:** soften passes `tool_calls` through with a `tool_softened` audit event. See [openclaw_v0_3.md](openclaw_v0_3.md).
+- **Argument-content analysis.** v0.2 governs by tool name only. **Now in v0.3:** stdlib regex deny patterns per argument path. See [openclaw_v0_3.md](openclaw_v0_3.md).
+- **ONNX and Anthropic backends.** They raise `BackendError("tools not supported by this backend in v0.2")` if `tools` is non-empty. Use `ollama` or `openai_compat`. (Still true in v0.3.)
+- **Streaming tool_calls.** Single-event SSE fallback only. (Still true in v0.3.)
+- **Generic-proxy tool governance.** The substrate-routed path is OpenClaw-profile only. (Still true in v0.3.)
+- **Live tool-capable upstream model** is not required for the v0.2 tag; tag gating uses stub-tests. A live validation report is post-tag follow-up. (Still true in v0.3.)
 
 ## Validation
 

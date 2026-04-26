@@ -39,6 +39,11 @@ from .meta.escalation import (
     should_escalate,
 )
 from .pipeline.runner import Runner
+from .policies.tool_policy import (
+    ArgumentDenial,
+    ToolPolicy,
+    tool_policy_from_allowlist,
+)
 from .schemas import (
     AnswerEnvelope,
     GroundingBundle,
@@ -90,7 +95,8 @@ class GovernedClient:
         grounding_paths: Sequence[str | Path] | None = None,
         memory_enabled: bool = True,
         escalation_enabled: bool = False,
-        tool_allowlist: Sequence[str] = (),
+        tool_allowlist: Sequence[str] | None = None,
+        tool_policy: ToolPolicy | None = None,
     ) -> None:
         if isinstance(backend, str):
             self._backend: ModelBackend = resolve_backend(
@@ -110,10 +116,19 @@ class GovernedClient:
         self._governance_enabled = bool(governance_enabled)
         self._memory_enabled = bool(memory_enabled)
         self._escalation_enabled = bool(escalation_enabled)
-        # v0.2: tool name allowlist used to synthesize policy_context_refs for
-        # the substrate's policy_gate / action_gate stages. Empty = no tools
-        # allowed (v0.1 behaviour: every tool call gets blocked).
-        self._tool_allowlist: tuple[str, ...] = tuple(tool_allowlist)
+        # v0.3: ToolPolicy is the authoritative shape. v0.2's tool_allowlist
+        # is preserved as backward-compat sugar.
+        if tool_allowlist is not None and tool_policy is not None:
+            raise ValueError(
+                "tool_allowlist and tool_policy are mutually exclusive; "
+                "pass one or the other (tool_policy is the v0.3 form)"
+            )
+        if tool_policy is not None:
+            self._tool_policy: ToolPolicy | None = tool_policy
+        elif tool_allowlist is not None and len(tool_allowlist) > 0:
+            self._tool_policy = tool_policy_from_allowlist(tool_allowlist)
+        else:
+            self._tool_policy = None
         self._runner = Runner()
         self._sink: TraceSink = self._build_sink(trace_file, trace_to_stderr)
         self._conversation_id = make_conversation_id()
@@ -164,8 +179,24 @@ class GovernedClient:
         return self._memory
 
     @property
+    def tool_policy(self) -> ToolPolicy | None:
+        return self._tool_policy
+
+    @property
     def tool_allowlist(self) -> tuple[str, ...]:
-        return self._tool_allowlist
+        """v0.2 compatibility: list of tool names whose decision is ``allow``.
+
+        Returns an empty tuple when no policy is configured.
+        """
+        if self._tool_policy is None:
+            return ()
+        return tuple(
+            sorted(
+                name
+                for name, td in self._tool_policy.tools.items()
+                if td.decision == "allow"
+            )
+        )
 
     def new_conversation(self) -> str:
         self._conversation_id = make_conversation_id()
@@ -369,24 +400,74 @@ class GovernedClient:
             )
             final_refs = corpus_refs
 
-            # v0.2: decide whether the upstream's tool_calls reach the caller.
-            # Allow only when the substrate's action_gate explicitly allowed
-            # the tool action surface. Anything else (block / soften /
-            # not_applicable / no tool_calls produced) yields a None.
+            # v0.3: decide whether the upstream's tool_calls reach the caller.
+            # The substrate's action_gate emits one of allow / soften / block /
+            # not_applicable. v0.3 maps:
+            #
+            # - allow  -> tool_calls pass through (same as v0.2 allow)
+            # - soften -> tool_calls pass through AND soften_warnings populated
+            # - block  -> tool_calls dropped, text refusal
+            # - other  -> tool_calls dropped, text refusal
+            #
+            # After that decision, run argument-deny inspection on whatever
+            # tool_calls survived. Any deny match is **all-or-nothing**:
+            # drop the whole array and switch to the text-refusal path
+            # (v0.3 simplification; per-call filtering is v0.4).
             governed_tool_calls: list[dict] | None = None
-            blocked_tool_names: list[str] = []
+            soften_warnings: list[str] = []
+            argument_denials_envelope: list[dict] = []
             if tool_intent_present and proposal.tool_calls:
                 ag = substrate_result.get("action_gate_decision") or {}
-                if ag.get("decision_class") == "allow":
+                ag_decision_class = ag.get("decision_class")
+                ag_reason_code = ag.get("reason_code")
+
+                if ag_decision_class == "allow":
                     governed_tool_calls = list(proposal.tool_calls)
+                elif ag_decision_class == "soften":
+                    governed_tool_calls = list(proposal.tool_calls)
+                    if isinstance(ag_reason_code, str) and ag_reason_code:
+                        soften_warnings.append(ag_reason_code)
+                    # Add per-tool soften reasons (the substrate emits one
+                    # action_gate decision for the turn; we add tool-specific
+                    # context so the trace names which tools were softened).
+                    if self._tool_policy is not None:
+                        for tc in proposal.tool_calls:
+                            tcn = _tool_call_name(tc)
+                            if not tcn:
+                                continue
+                            td = self._tool_policy.decide(tcn)
+                            if td.decision == "soften" and td.reason:
+                                soften_warnings.append(
+                                    f"{tcn}:{td.reason}"
+                                )
                 else:
                     blocked_tool_names = [
                         _tool_call_name(tc) for tc in proposal.tool_calls
                     ]
                     final_text = _format_tool_block_message(
                         blocked_tool_names=blocked_tool_names,
-                        allowlist=self._tool_allowlist,
+                        allowlist=self.tool_allowlist,
                     )
+
+                # v0.3 argument inspection runs on whatever survived the
+                # substrate decision. If anything was going to pass through
+                # (allow or soften), check the model's actual arguments.
+                if governed_tool_calls is not None and self._tool_policy is not None:
+                    denials: list[ArgumentDenial] = []
+                    for tc in governed_tool_calls:
+                        tcn = _tool_call_name(tc)
+                        if not tcn:
+                            continue
+                        fn_args = (tc.get("function") or {}).get("arguments")
+                        denials.extend(
+                            self._tool_policy.evaluate_arguments(tcn, fn_args)
+                        )
+                    if denials:
+                        # All-or-nothing: drop tool_calls, render refusal text.
+                        argument_denials_envelope = [d.to_dict() for d in denials]
+                        governed_tool_calls = None
+                        soften_warnings = []  # don't leak soften when blocked
+                        final_text = _format_argument_block_message(denials)
 
             # M4: store memory if admitted by the substrate
             if self._memory_enabled:
@@ -414,7 +495,8 @@ class GovernedClient:
             final_refs = []
             escalation_result = None
             governed_tool_calls = list(proposal.tool_calls) if proposal.tool_calls else None
-            blocked_tool_names = []
+            soften_warnings = []
+            argument_denials_envelope = []
 
             # M4: still store episodic memory even without governance
             if self._memory_enabled:
@@ -448,6 +530,8 @@ class GovernedClient:
             total_ms=total_ms,
             answer_mode=answer_mode,
             tool_calls=governed_tool_calls,
+            soften_warnings=list(soften_warnings),
+            argument_denials=list(argument_denials_envelope),
         )
 
     def close(self) -> None:
@@ -504,23 +588,30 @@ class GovernedClient:
         return MultiSink(sinks)
 
     def _build_tool_policy_refs(self, requested_tool_names: list[str]) -> list[str]:
-        """Synthesize ``policy:allow:tool:<n>`` / ``policy:block:tool:<n>`` refs.
+        """Synthesize ``policy:<decision>:tool:<n>`` refs from the tool policy.
 
-        v0.2 semantics: any requested tool name not in the configured allowlist
-        contributes a ``policy:block:tool:<n>`` ref, which the substrate's
-        policy_gate matches against ``policy:block:*`` and propagates to
-        action_gate. Names already on the allowlist contribute an explicit
-        ``policy:allow:tool:<n>`` ref for trace clarity.
+        v0.3 semantics: each requested tool name is looked up in the configured
+        :class:`ToolPolicy`. The decision (``allow`` / ``soften`` / ``block``)
+        determines the ref:
+
+        - ``allow``  -> ``policy:allow:tool:<n>``
+        - ``soften`` -> ``policy:soften:tool:<n>`` (action_gate soften trigger)
+        - ``block``  -> ``policy:block:tool:<n>`` (policy_gate block trigger)
+
+        When no policy is configured, every tool yields a block ref, preserving
+        v0.1/v0.2 default-block behaviour. Tool names not enumerated in the
+        policy fall back to ``policy.default``.
         """
         if not requested_tool_names:
             return []
-        allow_set = set(self._tool_allowlist)
+        if self._tool_policy is None:
+            return [
+                f"policy:block:tool:{name}" for name in requested_tool_names
+            ]
         refs: list[str] = []
         for name in requested_tool_names:
-            if name in allow_set:
-                refs.append(f"policy:allow:tool:{name}")
-            else:
-                refs.append(f"policy:block:tool:{name}")
+            decision = self._tool_policy.decide(name).decision
+            refs.append(f"policy:{decision}:tool:{name}")
         return refs
 
 
@@ -578,4 +669,28 @@ def _format_tool_block_message(
     return (
         f"AGIF Governor blocked tool calls: {blocked_unique}. "
         "No tools are currently allowlisted by the operator."
+    )
+
+
+def _format_argument_block_message(
+    denials: list["ArgumentDenial"],
+) -> str:
+    """Render the user-facing assistant text when argument deny-patterns matched.
+
+    Names only field paths and pattern ids — never the argument value. v0.3
+    is all-or-nothing: any denial drops the whole tool_calls array, so this
+    summarises every denial as a single refusal sentence.
+    """
+    if not denials:
+        return "AGIF Governor blocked tool calls: argument deny pattern matched."
+    pieces = sorted(
+        {
+            f"{d.tool_name}.{d.argument_path}={d.reason_code}#{d.pattern_id}"
+            for d in denials
+        }
+    )
+    return (
+        "AGIF Governor blocked tool calls: argument deny pattern matched. "
+        + "; ".join(pieces)
+        + "."
     )

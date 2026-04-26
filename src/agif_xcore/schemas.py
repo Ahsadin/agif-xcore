@@ -180,9 +180,19 @@ class TraceEnvelope:
 class AnswerEnvelope:
     """What ``GovernedClient.ask()`` returns to the caller.
 
-    The ``tool_calls`` field is populated only when the substrate's action_gate
-    decided ``allow`` for a tool-bearing turn. v0.1 callers that did not pass
-    ``tools`` to ``ask()`` will always see ``tool_calls=None`` and can ignore it.
+    The ``tool_calls`` field is populated when the substrate's action_gate
+    decided ``allow`` or ``soften`` for a tool-bearing turn (v0.3) — soften
+    still passes tool_calls through but flags them via ``soften_warnings``.
+    v0.1 callers that did not pass ``tools`` to ``ask()`` will always see
+    ``tool_calls=None`` and can ignore it.
+
+    v0.3 fields:
+
+    - ``soften_warnings``: substrate reason codes when action_gate emitted
+      ``soften``. Empty list when not softened.
+    - ``argument_denials``: per-argument deny-pattern matches recorded after
+      the substrate ran. When non-empty, v0.3 drops the tool_calls entirely
+      (all-or-nothing) and the response surfaces ``text`` instead.
     """
 
     text: str
@@ -193,6 +203,8 @@ class AnswerEnvelope:
     total_ms: int = 0
     answer_mode: str = "grounded_fact"
     tool_calls: list[dict[str, Any]] | None = None
+    soften_warnings: list[str] = field(default_factory=list)
+    argument_denials: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

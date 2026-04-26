@@ -32,6 +32,7 @@ from typing import Any, Sequence
 
 from ..backends.base import BackendError
 from ..client import GovernedClient
+from ..policies.tool_policy import ToolPolicy, tool_policy_from_allowlist
 
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -184,7 +185,8 @@ class ProxyConfig:
         proxy_api_key: str | None = None,
         memory_enabled: bool | None = None,
         unsafe_bind: bool = False,
-        tool_allowlist: Sequence[str] = (),
+        tool_allowlist: Sequence[str] | None = None,
+        tool_policy: ToolPolicy | None = None,
     ) -> None:
         self.backend = backend
         self.model = model
@@ -207,10 +209,20 @@ class ProxyConfig:
         self.proxy_api_key = proxy_api_key
         self.memory_enabled = memory_enabled
         self.unsafe_bind = bool(unsafe_bind)
-        # v0.2: tool name allowlist. Empty = no tools allowed (v0.1 default
-        # behaviour: fast fail-closed). Non-empty = substrate-routed governance
-        # against the listed tools.
-        self.tool_allowlist: tuple[str, ...] = tuple(tool_allowlist)
+        # v0.3: ToolPolicy is the authoritative shape. v0.2's tool_allowlist
+        # is preserved as backward-compat sugar (auto-converted via
+        # tool_policy_from_allowlist). Both flags can't be set at once.
+        if tool_allowlist is not None and tool_policy is not None:
+            raise ValueError(
+                "tool_allowlist and tool_policy are mutually exclusive; "
+                "pass one or the other (tool_policy is the v0.3 form)"
+            )
+        if tool_policy is not None:
+            self.tool_policy: ToolPolicy | None = tool_policy
+        elif tool_allowlist is not None and len(tool_allowlist) > 0:
+            self.tool_policy = tool_policy_from_allowlist(tool_allowlist)
+        else:
+            self.tool_policy = None
 
         if self.openclaw_profile:
             if not self.served_model_id:
@@ -227,6 +239,22 @@ class ProxyConfig:
                 raise ValueError(
                     "OpenClaw profile requires memory_enabled=False (hard-off in MVP)"
                 )
+
+    @property
+    def tool_allowlist(self) -> tuple[str, ...]:
+        """v0.2 compat: list of tool names whose decision is ``allow``.
+
+        Empty tuple when no policy is configured.
+        """
+        if self.tool_policy is None:
+            return ()
+        return tuple(
+            sorted(
+                name
+                for name, td in self.tool_policy.tools.items()
+                if td.decision == "allow"
+            )
+        )
 
 
 def build_proxy_server(
@@ -247,7 +275,7 @@ def build_proxy_server(
         governance_enabled=config.governance_enabled,
         grounding_paths=config.grounding_paths,
         trace_file=Path(config.trace_file) if config.trace_file else None,
-        tool_allowlist=config.tool_allowlist,
+        tool_policy=config.tool_policy,
     )
     if config.memory_enabled is not None:
         client_kwargs["memory_enabled"] = config.memory_enabled
@@ -417,8 +445,8 @@ def build_proxy_server(
                     self._respond_openclaw_tool_refusal(intent_reason)
                     return
                 if intent_mode == _TOOL_INTENT_SUBSTRATE:
-                    if not self._config.tool_allowlist:
-                        # No tools allowlisted by the operator: keep v0.1
+                    if self._config.tool_policy is None:
+                        # No policy configured by the operator: keep v0.1
                         # default-block behaviour without burning a backend
                         # call. Audit event is the existing tool_refusal.
                         self._respond_openclaw_tool_refusal(intent_reason)
@@ -493,59 +521,110 @@ def build_proxy_server(
             )
 
             tool_calls_allowed = bool(answer.tool_calls)
+            argument_denials_payload: list[dict] = list(answer.argument_denials)
+            soften_warnings_payload: list[str] = list(answer.soften_warnings)
 
-            # v0.2: when the substrate did not allow tool_calls through under
-            # the OpenClaw profile, emit a dedicated audit event so operators
-            # can grep for blocked tool intent without parsing TraceEnvelopes.
-            # Only fires when the request was substrate-routed (had tools[])
-            # and the answer did not surface any allowed tool_calls.
-            if (
-                self._config.openclaw_profile
-                and substrate_routed_tools is not None
-                and not tool_calls_allowed
-            ):
+            # v0.3: emit one of three audit-event types when applicable. The
+            # branches are mutually exclusive in priority order:
+            #
+            #   1. argument_denials present  → tool_blocked_by_argument
+            #      (one event per denial; tool_calls were dropped by the
+            #      client-side argument inspector regardless of substrate.)
+            #   2. soften_warnings present and tool_calls allowed
+            #      → tool_softened (substrate emitted soften but the
+            #      argument inspection passed; tool_calls are in the
+            #      response.)
+            #   3. substrate-routed and not tool_calls_allowed and no
+            #      argument denials → tool_blocked (v0.2 behaviour for
+            #      substrate name-level block.)
+            if self._config.openclaw_profile and substrate_routed_tools is not None:
                 ag: dict[str, Any] = {}
                 if answer.decisions is not None and answer.decisions.action_gate_decision:
                     ag = answer.decisions.action_gate_decision
-                # Blocked-name set: every requested tool name not in the
-                # allowlist. Names only — never arguments.
-                allowed_set = set(self._config.tool_allowlist)
-                requested_names: list[str] = []
-                for entry in substrate_routed_tools:
-                    fn = entry.get("function") if isinstance(entry, dict) else None
-                    if isinstance(fn, dict):
-                        nm = fn.get("name")
-                        if isinstance(nm, str) and nm:
-                            requested_names.append(nm)
-                blocked_names = sorted(
-                    {n for n in requested_names if n not in allowed_set}
-                )
-                _write_openclaw_audit_event(
-                    self._config.trace_file,
-                    {
-                        "schema_version": "openclaw_profile_event_v1",
-                        "event_type": "tool_blocked",
-                        "trace_id": answer.trace_id,
-                        "created": int(time.time()),
-                        "served_model_id": self._config.served_model_id,
-                        "upstream_model_id": self._config.model,
-                        "answer_mode": answer.answer_mode,
-                        "reason_code": ag.get(
-                            "reason_code", "action_gate_block"
-                        ),
-                        "blocked_tool_names": blocked_names,
-                        "governance_enabled": self._config.governance_enabled,
-                        "memory_enabled": bool(self._config.memory_enabled),
-                    },
-                )
+                now = int(time.time())
+
+                if argument_denials_payload:
+                    for denial in argument_denials_payload:
+                        _write_openclaw_audit_event(
+                            self._config.trace_file,
+                            {
+                                "schema_version": "openclaw_profile_event_v1",
+                                "event_type": "tool_blocked_by_argument",
+                                "trace_id": answer.trace_id,
+                                "created": now,
+                                "served_model_id": self._config.served_model_id,
+                                "upstream_model_id": self._config.model,
+                                "answer_mode": answer.answer_mode,
+                                "reason_code": denial.get(
+                                    "reason_code", "argument_pattern_match"
+                                ),
+                                "tool_name": denial.get("tool_name", ""),
+                                "argument_path": denial.get("argument_path", ""),
+                                "pattern_id": denial.get("pattern_id", ""),
+                                "governance_enabled": self._config.governance_enabled,
+                                "memory_enabled": bool(self._config.memory_enabled),
+                            },
+                        )
+                elif soften_warnings_payload and tool_calls_allowed:
+                    softened_names = sorted(
+                        {
+                            _tool_call_function_name(tc)
+                            for tc in (answer.tool_calls or [])
+                        }
+                        - {""}
+                    )
+                    _write_openclaw_audit_event(
+                        self._config.trace_file,
+                        {
+                            "schema_version": "openclaw_profile_event_v1",
+                            "event_type": "tool_softened",
+                            "trace_id": answer.trace_id,
+                            "created": now,
+                            "served_model_id": self._config.served_model_id,
+                            "upstream_model_id": self._config.model,
+                            "answer_mode": answer.answer_mode,
+                            "reason_code": ag.get(
+                                "reason_code", "action_gate_soften"
+                            ),
+                            "softened_tool_names": softened_names,
+                            "soften_reasons": list(soften_warnings_payload),
+                            "governance_enabled": self._config.governance_enabled,
+                            "memory_enabled": bool(self._config.memory_enabled),
+                        },
+                    )
+                elif not tool_calls_allowed:
+                    # v0.2 tool_blocked path: substrate name-level block.
+                    allowed_set = set(self._config.tool_allowlist)
+                    requested_names: list[str] = []
+                    for entry in substrate_routed_tools:
+                        fn = entry.get("function") if isinstance(entry, dict) else None
+                        if isinstance(fn, dict):
+                            nm = fn.get("name")
+                            if isinstance(nm, str) and nm:
+                                requested_names.append(nm)
+                    blocked_names = sorted(
+                        {n for n in requested_names if n not in allowed_set}
+                    )
+                    _write_openclaw_audit_event(
+                        self._config.trace_file,
+                        {
+                            "schema_version": "openclaw_profile_event_v1",
+                            "event_type": "tool_blocked",
+                            "trace_id": answer.trace_id,
+                            "created": now,
+                            "served_model_id": self._config.served_model_id,
+                            "upstream_model_id": self._config.model,
+                            "answer_mode": answer.answer_mode,
+                            "reason_code": ag.get(
+                                "reason_code", "action_gate_block"
+                            ),
+                            "blocked_tool_names": blocked_names,
+                            "governance_enabled": self._config.governance_enabled,
+                            "memory_enabled": bool(self._config.memory_enabled),
+                        },
+                    )
 
             content = answer.text
-            if self._config.trace_visibility in ("footer", "both"):
-                content = (
-                    f"{content}\n\nAGIF: mode={answer.answer_mode}; "
-                    f"trace={answer.trace_id}"
-                )
-
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": content,
@@ -553,11 +632,20 @@ def build_proxy_server(
             finish_reason = "stop"
             if tool_calls_allowed:
                 # OpenAI shape: when tool_calls is present, content is null and
-                # finish_reason is "tool_calls". We keep content=null per spec
-                # so OpenClaw's parser handles the response correctly.
+                # finish_reason is "tool_calls". v0.3 specifically does NOT
+                # inject an AGIF footer into a null content field — soften
+                # information surfaces only via x_agif_trace and the
+                # tool_softened audit event.
                 assistant_message["content"] = None
                 assistant_message["tool_calls"] = list(answer.tool_calls)
                 finish_reason = "tool_calls"
+            else:
+                # Plain-text response: keep the v0.1/v0.2 footer behaviour.
+                if self._config.trace_visibility in ("footer", "both"):
+                    assistant_message["content"] = (
+                        f"{content}\n\nAGIF: mode={answer.answer_mode}; "
+                        f"trace={answer.trace_id}"
+                    )
 
             response_payload = {
                 "id": f"chatcmpl-{answer.trace_id}",
@@ -586,6 +674,8 @@ def build_proxy_server(
                     "total_ms": answer.total_ms,
                     "refs": answer.refs,
                     "tool_calls_allowed": tool_calls_allowed,
+                    "soften_warnings": list(soften_warnings_payload),
+                    "argument_denials": list(argument_denials_payload),
                 },
             }
 

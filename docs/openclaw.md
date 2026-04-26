@@ -22,7 +22,9 @@ OpenClaw can route chat replies through AGIF-XCore governance and receive govern
 
 **Not in v0.1:** tool execution, function calling, model switching, NemoClaw/OpenShell, true token streaming, network-exposed deployment, opt-in memory.
 
-**v0.2 adds:** named tool-call governance via the substrate's action_gate stage. See [openclaw_v0_2.md](openclaw_v0_2.md). Tool *execution* and per-argument analysis remain non-goals; v0.2 governs tool *intent* only — the model's `tool_calls` reply is allowed or blocked based on the operator's `--tool-allowlist`, and the proxy never executes a tool itself.
+**v0.2 adds:** named tool-call governance via the substrate's action_gate stage. See [openclaw_v0_2.md](openclaw_v0_2.md).
+
+**v0.3 adds:** the substrate's `soften` decision now lets `tool_calls` pass through with a flagged audit trail; per-tool argument inspection via stdlib regex deny patterns; and a JSON `--tool-policy-file` for declarative per-tool decisions. See [openclaw_v0_3.md](openclaw_v0_3.md). Tool *execution* remains a non-goal — the proxy never executes a tool itself.
 
 Validation records:
 
@@ -30,6 +32,7 @@ Validation records:
 - [openclaw_10_prompt_results.md](openclaw_10_prompt_results.md) (v0.1 + auth addendum)
 - [openclaw_v0_1_release_note.md](openclaw_v0_1_release_note.md) (v0.1 release note)
 - [openclaw_v0_2.md](openclaw_v0_2.md) (v0.2 contract + validation)
+- [openclaw_v0_3.md](openclaw_v0_3.md) (v0.3 contract + validation)
 
 ## Threat model
 

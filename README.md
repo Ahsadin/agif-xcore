@@ -93,6 +93,10 @@ optional bearer auth, and fail-closed audit events in the trace file. See
 - **v0.2** — adds substrate-routed *named* tool-call governance via
   `--tool-allowlist`. Tool execution still happens at the client; the proxy
   governs intent only. See [docs/openclaw_v0_2.md](docs/openclaw_v0_2.md).
+- **v0.3** — adds the substrate `soften` path, per-tool argument deny
+  patterns (stdlib regex with safety limits), and a JSON
+  `--tool-policy-file`. Names only ever appear in audit events — argument
+  values never leak. See [docs/openclaw_v0_3.md](docs/openclaw_v0_3.md).
 
 ### Library
 

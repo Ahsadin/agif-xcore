@@ -8,6 +8,12 @@ import sys
 
 from ..backends.base import BackendError
 from ..backends.registry import available_backends
+from ..policies.tool_policy import (
+    SCHEMA_VERSION as TOOL_POLICY_SCHEMA_VERSION,
+    ToolPolicy,
+    load_tool_policy,
+    tool_policy_from_allowlist,
+)
 from ..proxy.server import ProxyConfig, _is_loopback_host, build_proxy_server
 
 
@@ -144,10 +150,21 @@ def add_serve_parser(subparsers: argparse._SubParsersAction) -> argparse.Argumen
         default=None,
         metavar="NAME[,NAME...]",
         help=(
-            "v0.2: comma-separated list of tool names allowed in OpenClaw "
-            "profile. Repeatable. Empty/unset preserves v0.1 behaviour "
-            "(every tool call fail-closed). When non-empty, the substrate's "
-            "action_gate decides allow/block per request."
+            "v0.2 sugar: comma-separated list of tool names allowed in "
+            "OpenClaw profile. Repeatable. Mutually exclusive with "
+            "--tool-policy-file. Internally synthesizes a ToolPolicy with "
+            "default=block."
+        ),
+    )
+    parser.add_argument(
+        "--tool-policy-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "v0.3: path to a JSON tool-policy bundle "
+            f"(schema_version={TOOL_POLICY_SCHEMA_VERSION}). Declares "
+            "per-tool decisions (allow/soften/block) and per-argument "
+            "regex deny patterns. Mutually exclusive with --tool-allowlist."
         ),
     )
     parser.set_defaults(func=_run_serve)
@@ -201,10 +218,31 @@ def _run_serve(args: argparse.Namespace) -> int:
                 )
                 return 2
 
-    # Flatten --tool-allowlist into a single tuple of unique names. Both
-    # comma-separated values and repeated flags are accepted.
+    # v0.3: --tool-allowlist and --tool-policy-file are mutually exclusive.
+    if args.tool_allowlist and args.tool_policy_file:
+        print(
+            "error: --tool-allowlist and --tool-policy-file are mutually "
+            "exclusive; pass one or the other",
+            file=sys.stderr,
+        )
+        return 2
+
     tool_allowlist: tuple[str, ...] = ()
-    if args.tool_allowlist:
+    tool_policy: ToolPolicy | None = None
+    if args.tool_policy_file:
+        try:
+            tool_policy = load_tool_policy(args.tool_policy_file)
+        except FileNotFoundError:
+            print(
+                f"error: tool policy file not found: {args.tool_policy_file}",
+                file=sys.stderr,
+            )
+            return 2
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    elif args.tool_allowlist:
+        # Flatten the v0.2 sugar form into a single tuple of unique names.
         seen: list[str] = []
         for item in args.tool_allowlist:
             for piece in str(item).split(","):
@@ -212,6 +250,8 @@ def _run_serve(args: argparse.Namespace) -> int:
                 if name and name not in seen:
                     seen.append(name)
         tool_allowlist = tuple(seen)
+        if tool_allowlist:
+            tool_policy = tool_policy_from_allowlist(tool_allowlist)
 
     try:
         config = ProxyConfig(
@@ -231,7 +271,7 @@ def _run_serve(args: argparse.Namespace) -> int:
             proxy_api_key=resolved_proxy_api_key,
             memory_enabled=False if args.openclaw_profile else None,
             unsafe_bind=args.unsafe_bind,
-            tool_allowlist=tool_allowlist,
+            tool_policy=tool_policy,
         )
         server = build_proxy_server(config, host=args.host, port=args.port)
     except (BackendError, ValueError) as exc:
@@ -240,10 +280,18 @@ def _run_serve(args: argparse.Namespace) -> int:
 
     if args.openclaw_profile:
         host_safe = _is_loopback_host(args.host) or args.unsafe_bind
-        if tool_allowlist:
-            tool_state = f"ALLOW {', '.join(tool_allowlist)}"
-        else:
+        if tool_policy is None:
             tool_state = "OFF (every tool call fail-closed; v0.1 behaviour)"
+        else:
+            counts = {"allow": 0, "soften": 0, "block": 0}
+            for td in tool_policy.tools.values():
+                counts[td.decision] = counts.get(td.decision, 0) + 1
+            tool_state = (
+                f"{len(tool_policy.tools)} tools "
+                f"(default={tool_policy.default}) "
+                f"allow={counts['allow']} soften={counts['soften']} "
+                f"block={counts['block']}"
+            )
         print(
             f"AGIF-XCore proxy (OpenClaw profile) at http://{args.host}:{args.port}\n"
             f"  served model id : {args.served_model_id}\n"
@@ -254,7 +302,7 @@ def _run_serve(args: argparse.Namespace) -> int:
             f"  trace visibility: {args.trace_visibility}\n"
             f"  auth            : {'ON' if resolved_proxy_api_key else 'OFF'}\n"
             f"  host safe       : {host_safe}\n"
-            f"  tool allowlist  : {tool_state}\n"
+            f"  tool policy     : {tool_state}\n"
             f"\n"
             f"OpenClaw provider base_url: http://{args.host}:{args.port}/v1\n"
             f"\n"

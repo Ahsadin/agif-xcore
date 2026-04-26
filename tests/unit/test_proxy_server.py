@@ -14,17 +14,41 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agif_xcore.backends.base import BackendError, BackendResponse
+from agif_xcore.policies.tool_policy import (
+    SCHEMA_VERSION as TOOL_POLICY_SCHEMA_VERSION,
+    ToolDecision,
+    ToolPolicy,
+    load_tool_policy,
+)
 from agif_xcore.proxy.server import (
     ProxyConfig,
     _has_tool_payload,
     _is_loopback_host,
     build_proxy_server,
 )
+
+
+def _build_policy_from_dict(payload: dict) -> ToolPolicy:
+    """Build a ToolPolicy from a JSON-shaped dict via a tempfile + load_tool_policy.
+
+    Lets v0.3 governance tests express a full policy inline without writing
+    a fixture file per test.
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8",
+    )
+    json.dump(payload, tmp)
+    tmp.flush()
+    tmp.close()
+    try:
+        return load_tool_policy(tmp.name)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -239,15 +263,19 @@ SERVED_ID = "agif-governor/stub"
 UPSTREAM_ID = "stubmodel"
 
 
-def _make_stub_client(trace_file: Path, tool_allowlist=()):
+def _make_stub_client(trace_file: Path, tool_allowlist=None, tool_policy=None):
     from agif_xcore.client import GovernedClient
-    return GovernedClient(
+    kwargs = dict(
         backend=_StubBackend(),
         model=UPSTREAM_ID,
         memory_enabled=False,
         trace_file=trace_file,
-        tool_allowlist=tool_allowlist,
     )
+    if tool_policy is not None:
+        kwargs["tool_policy"] = tool_policy
+    elif tool_allowlist:
+        kwargs["tool_allowlist"] = tool_allowlist
+    return GovernedClient(**kwargs)
 
 
 def _start_openclaw_server(
@@ -255,11 +283,12 @@ def _start_openclaw_server(
     trace_file: Path,
     trace_visibility: str = "metadata",
     proxy_api_key: str | None = None,
-    tool_allowlist=(),
+    tool_allowlist=None,
+    tool_policy=None,
     stub_backend=None,
 ) -> tuple[Any, int]:
     port = _free_port()
-    config = ProxyConfig(
+    cfg_kwargs = dict(
         backend="ollama",
         model=UPSTREAM_ID,
         openclaw_profile=True,
@@ -267,23 +296,31 @@ def _start_openclaw_server(
         trace_visibility=trace_visibility,
         trace_file=str(trace_file),
         proxy_api_key=proxy_api_key,
-        tool_allowlist=tool_allowlist,
     )
+    if tool_policy is not None:
+        cfg_kwargs["tool_policy"] = tool_policy
+    elif tool_allowlist:
+        cfg_kwargs["tool_allowlist"] = tool_allowlist
+    config = ProxyConfig(**cfg_kwargs)
     server = build_proxy_server(config, host="127.0.0.1", port=port)
     if stub_backend is None:
         server.RequestHandlerClass._client = _make_stub_client(
-            trace_file, tool_allowlist=tool_allowlist,
+            trace_file, tool_allowlist=tool_allowlist, tool_policy=tool_policy,
         )
     else:
         from agif_xcore.client import GovernedClient
-        server.RequestHandlerClass._client = GovernedClient(
+        client_kwargs = dict(
             backend=stub_backend,
             model=UPSTREAM_ID,
             memory_enabled=False,
             trace_file=trace_file,
             governance_enabled=True,
-            tool_allowlist=tool_allowlist,
         )
+        if tool_policy is not None:
+            client_kwargs["tool_policy"] = tool_policy
+        elif tool_allowlist:
+            client_kwargs["tool_allowlist"] = tool_allowlist
+        server.RequestHandlerClass._client = GovernedClient(**client_kwargs)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     time.sleep(0.1)
@@ -292,15 +329,21 @@ def _start_openclaw_server(
 
 @dataclass
 class _ToolCallingStub:
-    """v0.2 stub backend that returns canned tool_calls when ``tools`` is passed.
+    """v0.2/v0.3 stub backend that returns canned tool_calls when ``tools``
+    is passed.
 
     When the request has tools, the stub returns one tool_call per name in
     ``tool_call_names``. When the request has no tools, returns plain text.
+
+    v0.3: ``tool_call_arguments`` maps tool name to a JSON string injected
+    into the corresponding tool_call's ``function.arguments``. Names absent
+    from the dict get an empty arguments object (``"{}"``).
     """
 
     name: str = "tool_stub"
     fixed_text: str = "no tools needed"
     tool_call_names: tuple[str, ...] = ()
+    tool_call_arguments: dict = field(default_factory=dict)
 
     def complete(
         self, messages, *, model, temperature=0.0, max_tokens=None,
@@ -311,7 +354,10 @@ class _ToolCallingStub:
                 {
                     "id": f"call_{i}",
                     "type": "function",
-                    "function": {"name": name, "arguments": "{}"},
+                    "function": {
+                        "name": name,
+                        "arguments": self.tool_call_arguments.get(name, "{}"),
+                    },
                 }
                 for i, name in enumerate(self.tool_call_names)
             ]
@@ -852,14 +898,22 @@ class OpenClawToolGovernanceTests(unittest.TestCase):
     def _start(
         self,
         *,
-        tool_allowlist=(),
+        tool_allowlist=None,
+        tool_policy=None,
         tool_call_names: tuple[str, ...] = (),
+        tool_call_arguments: dict[str, str] | None = None,
+        trace_visibility: str = "metadata",
     ):
-        stub = _ToolCallingStub(tool_call_names=tool_call_names)
+        stub = _ToolCallingStub(
+            tool_call_names=tool_call_names,
+            tool_call_arguments=dict(tool_call_arguments or {}),
+        )
         server, port = _start_openclaw_server(
             trace_file=self.trace_file,
             tool_allowlist=tool_allowlist,
+            tool_policy=tool_policy,
             stub_backend=stub,
+            trace_visibility=trace_visibility,
         )
         self._servers.append(server)
         return port
@@ -1087,6 +1141,241 @@ class OpenClawToolGovernanceTests(unittest.TestCase):
         events = _read_audit_events(self.trace_file)
         self.assertEqual(len(events), 0)
 
+    # ---- v0.3: soften path ----
+
+    def _soften_policy(self) -> ToolPolicy:
+        return ToolPolicy(
+            schema_version=TOOL_POLICY_SCHEMA_VERSION,
+            default="block",
+            tools={
+                "write_file": ToolDecision(
+                    name="write_file",
+                    decision="soften",
+                    reason="writes user files",
+                ),
+            },
+        )
+
+    def test_softened_tool_passes_through_with_warnings(self) -> None:
+        port = self._start(
+            tool_policy=self._soften_policy(),
+            tool_call_names=("write_file",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "save it"}],
+            "tools": [{"type": "function", "function": {"name": "write_file"}}],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        msg = payload["choices"][0]["message"]
+        # tool_calls pass through under soften.
+        self.assertIsNotNone(msg.get("tool_calls"))
+        self.assertEqual(len(msg["tool_calls"]), 1)
+        self.assertTrue(payload["x_agif_trace"]["tool_calls_allowed"])
+        # Soften reasons recorded in x_agif_trace.
+        self.assertGreater(len(payload["x_agif_trace"]["soften_warnings"]), 0)
+
+    def test_softened_response_has_null_content_no_footer(self) -> None:
+        """Correction #3: never inject footer text into a tool_calls response."""
+        port = self._start(
+            tool_policy=self._soften_policy(),
+            tool_call_names=("write_file",),
+            trace_visibility="both",  # would normally append a footer
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "save"}],
+            "tools": [{"type": "function", "function": {"name": "write_file"}}],
+        }
+        _, payload = self._post(port, body)
+        msg = payload["choices"][0]["message"]
+        self.assertIsNone(msg["content"])  # null per OpenAI spec
+        # Make sure the AGIF marker did not leak into a stringified content.
+        self.assertNotIn("AGIF: mode=", json.dumps(msg))
+
+    def test_softened_tool_writes_tool_softened_audit_event(self) -> None:
+        port = self._start(
+            tool_policy=self._soften_policy(),
+            tool_call_names=("write_file",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "save"}],
+            "tools": [{"type": "function", "function": {"name": "write_file"}}],
+        }
+        _, payload = self._post(port, body)
+        events = [
+            e for e in _read_audit_events(self.trace_file)
+            if e["event_type"] == "tool_softened"
+        ]
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev["trace_id"], payload["x_agif_trace"]["trace_id"])
+        self.assertIn("write_file", ev["softened_tool_names"])
+        self.assertGreater(len(ev["soften_reasons"]), 0)
+
+    # ---- v0.3: argument inspection ----
+
+    def _exec_policy_blocking_rm(self) -> ToolPolicy:
+        return _build_policy_from_dict({
+            "schema_version": TOOL_POLICY_SCHEMA_VERSION,
+            "default": "block",
+            "tools": {
+                "exec": {
+                    "decision": "allow",
+                    "argument_deny_patterns": {"command": r"rm\s+-rf"},
+                },
+                "search": {"decision": "allow"},
+            },
+        })
+
+    def test_argument_deny_pattern_drops_all_tool_calls_in_turn(self) -> None:
+        """Correction #2: any deny match drops the entire tool_calls array."""
+        port = self._start(
+            tool_policy=self._exec_policy_blocking_rm(),
+            tool_call_names=("search", "exec"),
+            tool_call_arguments={
+                "search": json.dumps({"q": "weather"}),
+                "exec": json.dumps({"command": "rm -rf /tmp/scratch"}),
+            },
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "do it"}],
+            "tools": [
+                {"type": "function", "function": {"name": "search"}},
+                {"type": "function", "function": {"name": "exec"}},
+            ],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        msg = payload["choices"][0]["message"]
+        # All-or-nothing: even though `search` was clean, the entire array is dropped.
+        self.assertIsNone(msg.get("tool_calls"))
+        self.assertEqual(payload["choices"][0]["finish_reason"], "stop")
+        self.assertFalse(payload["x_agif_trace"]["tool_calls_allowed"])
+        # argument_denials surfaces in x_agif_trace.
+        self.assertEqual(len(payload["x_agif_trace"]["argument_denials"]), 1)
+
+    def test_argument_deny_writes_tool_blocked_by_argument_audit_event(self) -> None:
+        port = self._start(
+            tool_policy=self._exec_policy_blocking_rm(),
+            tool_call_names=("exec",),
+            tool_call_arguments={
+                "exec": json.dumps({"command": "sudo rm -rf /"}),
+            },
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "exec"}}],
+        }
+        _, payload = self._post(port, body)
+        events = [
+            e for e in _read_audit_events(self.trace_file)
+            if e["event_type"] == "tool_blocked_by_argument"
+        ]
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev["tool_name"], "exec")
+        self.assertEqual(ev["argument_path"], "command")
+        self.assertEqual(ev["reason_code"], "argument_pattern_match")
+        self.assertEqual(ev["trace_id"], payload["x_agif_trace"]["trace_id"])
+        # The pattern_id is a short hash, NEVER the regex source.
+        self.assertEqual(len(ev["pattern_id"]), 8)
+
+    def test_argument_deny_audit_event_does_not_log_argument_value(self) -> None:
+        """v0.3 no-secret regression: argument values never reach trace,
+        stderr, or HTTP error body."""
+        import contextlib
+        import io
+
+        sentinel = "VERY-DISTINCTIVE-SECRET-VALUE-AAA-BBB"
+        # Arrange: pattern matches the sentinel, so it WILL be flagged. The
+        # value itself must not appear in any artifact.
+        policy = _build_policy_from_dict({
+            "schema_version": TOOL_POLICY_SCHEMA_VERSION,
+            "default": "block",
+            "tools": {
+                "exec": {
+                    "decision": "allow",
+                    "argument_deny_patterns": {
+                        "command": r"VERY-DISTINCTIVE-SECRET-VALUE",
+                    },
+                },
+            },
+        })
+        port = self._start(
+            tool_policy=policy,
+            tool_call_names=("exec",),
+            tool_call_arguments={
+                "exec": json.dumps({"command": sentinel}),
+            },
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "exec"}}],
+        }
+        captured_stderr = io.StringIO()
+        with contextlib.redirect_stderr(captured_stderr):
+            status, payload = self._post(port, body)
+
+        # 1. HTTP response body must not contain the sentinel.
+        self.assertNotIn(sentinel, json.dumps(payload))
+        # 2. Trace JSONL (substrate envelopes + audit events) must not.
+        # NOTE: the substrate does see the proposal_envelope.tool_calls which
+        # carry the arguments JSON — that's the substrate's evidence record,
+        # not an audit event. The plan explicitly states: "argument values
+        # never appear in any audit event." Audit events are the v0.3
+        # invariant; the substrate trace records its own evidence.
+        # Read each line and check only audit events.
+        for ev in _read_audit_events(self.trace_file):
+            self.assertNotIn(sentinel, json.dumps(ev))
+        # 3. Captured stderr must not.
+        self.assertNotIn(sentinel, captured_stderr.getvalue())
+
+    def test_argument_value_too_long_blocks_without_running_regex(self) -> None:
+        """Correction #5: a pathological regex must never run on an
+        oversized value."""
+        from agif_xcore.policies.tool_policy import MAX_ARGUMENT_VALUE_CHARS
+        policy = _build_policy_from_dict({
+            "schema_version": TOOL_POLICY_SCHEMA_VERSION,
+            "default": "block",
+            "tools": {
+                "exec": {
+                    "decision": "allow",
+                    # Catastrophic-backtracking regex; would hang on a long
+                    # input if the safety limit didn't fire first.
+                    "argument_deny_patterns": {"command": r"(a+)+b"},
+                },
+            },
+        })
+        long_value = "a" * (MAX_ARGUMENT_VALUE_CHARS + 1)
+        port = self._start(
+            tool_policy=policy,
+            tool_call_names=("exec",),
+            tool_call_arguments={
+                "exec": json.dumps({"command": long_value}),
+            },
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "exec"}}],
+        }
+        _, payload = self._post(port, body)
+        denials = payload["x_agif_trace"]["argument_denials"]
+        self.assertEqual(len(denials), 1)
+        self.assertEqual(denials[0]["reason_code"], "argument_value_too_long")
+        events = [
+            e for e in _read_audit_events(self.trace_file)
+            if e["event_type"] == "tool_blocked_by_argument"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["reason_code"], "argument_value_too_long")
+
 
 # ---------------------------------------------------------------------------
 # CLI-level validator tests (run _run_serve without binding a server)
@@ -1165,6 +1454,57 @@ class OpenClawCliValidatorTests(unittest.TestCase):
                 "--served-model-id", SERVED_ID,
                 "--trace-file", f"{d}/t.jsonl",
                 "--proxy-api-key-env", "OPENCLAW_TEST_KEY_UNSET",
+            ])
+        self.assertEqual(rc, 2)
+
+    # ---- v0.3: --tool-policy-file ----
+
+    def test_tool_allowlist_and_tool_policy_file_mutually_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            policy_path = Path(d) / "policy.json"
+            policy_path.write_text(json.dumps({
+                "schema_version": TOOL_POLICY_SCHEMA_VERSION,
+                "tools": {"search": {"decision": "allow"}},
+            }))
+            rc = self._run([
+                "serve",
+                "--model", UPSTREAM_ID,
+                "--openclaw-profile",
+                "--served-model-id", SERVED_ID,
+                "--trace-file", f"{d}/t.jsonl",
+                "--tool-allowlist", "search",
+                "--tool-policy-file", str(policy_path),
+            ])
+        self.assertEqual(rc, 2)
+
+    def test_tool_policy_file_invalid_json_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "policy.json"
+            bad.write_text("{ not valid json")
+            rc = self._run([
+                "serve",
+                "--model", UPSTREAM_ID,
+                "--openclaw-profile",
+                "--served-model-id", SERVED_ID,
+                "--trace-file", f"{d}/t.jsonl",
+                "--tool-policy-file", str(bad),
+            ])
+        self.assertEqual(rc, 2)
+
+    def test_tool_policy_file_unknown_schema_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "policy.json"
+            bad.write_text(json.dumps({
+                "schema_version": "openclaw_tool_policy_v99",
+                "tools": {},
+            }))
+            rc = self._run([
+                "serve",
+                "--model", UPSTREAM_ID,
+                "--openclaw-profile",
+                "--served-model-id", SERVED_ID,
+                "--trace-file", f"{d}/t.jsonl",
+                "--tool-policy-file", str(bad),
             ])
         self.assertEqual(rc, 2)
 
