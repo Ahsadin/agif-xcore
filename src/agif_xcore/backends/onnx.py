@@ -218,13 +218,23 @@ class OnnxBackend:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = 30_000,
+        tools: list[dict[str, Any]] | None = None,
     ) -> BackendResponse:
         """Run inference on the local ONNX model.
 
         The ``model`` parameter is accepted for protocol compliance but
         is not used for model selection (we use ``model_path`` from
         init). It's echoed back in the response.
+
+        Tool-calling is not supported by the ONNX backend in v0.2; passing a
+        non-empty ``tools`` list raises ``BackendError`` rather than silently
+        dropping tools and pretending the model could have called them.
         """
+        if tools:
+            raise BackendError(
+                "tools not supported by the ONNX backend in v0.2; "
+                "use ollama or openai_compat for governed tool calls"
+            )
         self._ensure_loaded()
         effective_timeout = min(timeout_ms, self._timeout_ms)
         start = time.monotonic()

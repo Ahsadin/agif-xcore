@@ -22,7 +22,14 @@ ChatMessage = dict[str, str]
 
 @dataclass
 class BackendResponse:
-    """Flat structure representing one non-streaming completion."""
+    """Flat structure representing one non-streaming completion.
+
+    The ``tool_calls`` field is populated only when the upstream model returned
+    OpenAI-shaped tool_calls in ``choices[0].message.tool_calls``. v0.1 callers
+    can ignore it; it defaults to ``None`` so existing call sites are
+    backward-compatible. Whether tool_calls are *governed* (passed to the
+    client or stripped) is decided by the substrate, not by the backend.
+    """
 
     text: str
     model_id: str
@@ -31,6 +38,7 @@ class BackendResponse:
     completion_tokens: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +88,19 @@ class ModelBackend(Protocol):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = 30_000,
+        tools: list[dict[str, Any]] | None = None,
     ) -> BackendResponse:
         """Run a non-streaming chat completion and return the response.
 
         Raises ``BackendError`` (or a subclass) on any failure. Must not
         return partial results; must not silently degrade.
+
+        If ``tools`` is provided (non-empty), the backend forwards the
+        OpenAI-shaped tool spec to the upstream and parses ``tool_calls`` from
+        the response into ``BackendResponse.tool_calls``. Backends that do not
+        support tools must raise ``BackendError`` rather than silently drop
+        them. ``tools=None`` and ``tools=[]`` behave identically (no tool
+        passthrough).
         """
         ...
 

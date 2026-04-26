@@ -90,6 +90,7 @@ class GovernedClient:
         grounding_paths: Sequence[str | Path] | None = None,
         memory_enabled: bool = True,
         escalation_enabled: bool = False,
+        tool_allowlist: Sequence[str] = (),
     ) -> None:
         if isinstance(backend, str):
             self._backend: ModelBackend = resolve_backend(
@@ -109,6 +110,10 @@ class GovernedClient:
         self._governance_enabled = bool(governance_enabled)
         self._memory_enabled = bool(memory_enabled)
         self._escalation_enabled = bool(escalation_enabled)
+        # v0.2: tool name allowlist used to synthesize policy_context_refs for
+        # the substrate's policy_gate / action_gate stages. Empty = no tools
+        # allowed (v0.1 behaviour: every tool call gets blocked).
+        self._tool_allowlist: tuple[str, ...] = tuple(tool_allowlist)
         self._runner = Runner()
         self._sink: TraceSink = self._build_sink(trace_file, trace_to_stderr)
         self._conversation_id = make_conversation_id()
@@ -158,6 +163,10 @@ class GovernedClient:
     def memory(self) -> ConversationMemory:
         return self._memory
 
+    @property
+    def tool_allowlist(self) -> tuple[str, ...]:
+        return self._tool_allowlist
+
     def new_conversation(self) -> str:
         self._conversation_id = make_conversation_id()
         # Working memory is cleared per conversation; episodic/continuity
@@ -176,12 +185,18 @@ class GovernedClient:
         task_family_hint: str | None = None,
         policy_refs: list[str] | None = None,
         grounding_refs: list[str] | None = None,
+        tools: list[dict] | None = None,
     ) -> AnswerEnvelope:
         """Run one turn end-to-end.
 
         Same code path whether governance is on or off. When off, the
         substrate is skipped and the raw LLM answer is returned. When
         on, the substrate decides the answer mode and reshapes the text.
+
+        v0.2: when ``tools`` is non-empty, the OpenAI-shaped tool spec is
+        forwarded to the upstream model. The substrate's action_gate decides
+        whether the model's tool_calls reply is allowed through. The
+        client's ``tool_allowlist`` controls which tool names are permitted.
         """
         if not user_input_text or not user_input_text.strip():
             raise ValueError("user_input_text is required and cannot be empty")
@@ -208,12 +223,19 @@ class GovernedClient:
                 label = "Established fact from earlier" if entry.plane == "continuity" else "Prior exchange"
                 memory_context.append({"label": label, "content": entry.content})
 
+        # v0.2: figure out which tool names were requested. We need this both
+        # to pass tools through to the backend and to synthesize substrate
+        # policy refs ahead of time.
+        requested_tool_names: list[str] = _extract_tool_names(tools)
+        tool_intent_present = bool(requested_tool_names)
+
         total_started = time.perf_counter()
         proposal = self._runner.run(
             turn=turn,
             grounding=grounding,
             backend=self._backend,
             memory_context=memory_context,
+            tools=tools if tool_intent_present else None,
         )
         pipeline_ms = int((time.perf_counter() - total_started) * 1000)
 
@@ -227,21 +249,44 @@ class GovernedClient:
 
             # Build the turn envelope dict for the substrate
             corpus_refs = [c.ref for c in grounding.chunks]
+
+            # v0.2: synthesize tool-policy refs so policy_gate / action_gate
+            # can decide allow/block on tool intent. Off-allowlist tools yield
+            # ``policy:block:tool:<n>`` refs that policy_gate matches.
+            base_policy_refs = list(turn.policy_refs or [])
+            tool_policy_refs = self._build_tool_policy_refs(requested_tool_names)
+            combined_policy_refs = base_policy_refs + tool_policy_refs
+
             turn_dict = {
                 "turn_id": turn.turn_id,
                 "conversation_id": turn.conversation_id,
                 "user_input_text": turn.user_input_text,
                 "admitted_corpus_refs": corpus_refs,
-                "policy_context_refs_or_none": turn.policy_refs,
+                "policy_context_refs_or_none": (
+                    combined_policy_refs if combined_policy_refs else None
+                ),
                 "prior_state_refs_or_none": None,
-                "requested_action_class_or_none": None,
+                "requested_action_class_or_none": (
+                    "tool_call" if tool_intent_present else None
+                ),
                 "task_family": task_family_hint,
             }
+            # v0.2: when the upstream model returned tool_calls, surface them
+            # to the substrate so action_gate sees the actual proposed action.
+            proposed_action: dict | None = None
+            if proposal.tool_calls:
+                proposed_action = {
+                    "kind": "tool_calls",
+                    "tool_calls": list(proposal.tool_calls),
+                    "tool_names": [
+                        _tool_call_name(tc) for tc in proposal.tool_calls
+                    ],
+                }
             proposal_dict = {
                 "proposal_id": f"proposal:{turn.turn_id}",
                 "turn_id": turn.turn_id,
                 "proposed_content_summary_or_none": proposal.raw_answer_text[:200],
-                "proposed_action_or_none": None,
+                "proposed_action_or_none": proposed_action,
                 "proposed_answer_mode_candidates": ["grounded_fact", "derived_explanation"],
                 "proposed_evidence_refs_or_none": corpus_refs or None,
                 "memory_suggestion_or_none": memory_suggestion,
@@ -324,6 +369,25 @@ class GovernedClient:
             )
             final_refs = corpus_refs
 
+            # v0.2: decide whether the upstream's tool_calls reach the caller.
+            # Allow only when the substrate's action_gate explicitly allowed
+            # the tool action surface. Anything else (block / soften /
+            # not_applicable / no tool_calls produced) yields a None.
+            governed_tool_calls: list[dict] | None = None
+            blocked_tool_names: list[str] = []
+            if tool_intent_present and proposal.tool_calls:
+                ag = substrate_result.get("action_gate_decision") or {}
+                if ag.get("decision_class") == "allow":
+                    governed_tool_calls = list(proposal.tool_calls)
+                else:
+                    blocked_tool_names = [
+                        _tool_call_name(tc) for tc in proposal.tool_calls
+                    ]
+                    final_text = _format_tool_block_message(
+                        blocked_tool_names=blocked_tool_names,
+                        allowlist=self._tool_allowlist,
+                    )
+
             # M4: store memory if admitted by the substrate
             if self._memory_enabled:
                 self._memory.admit_and_store(
@@ -349,6 +413,8 @@ class GovernedClient:
             final_text = proposal.raw_answer_text
             final_refs = []
             escalation_result = None
+            governed_tool_calls = list(proposal.tool_calls) if proposal.tool_calls else None
+            blocked_tool_names = []
 
             # M4: still store episodic memory even without governance
             if self._memory_enabled:
@@ -381,6 +447,7 @@ class GovernedClient:
             decisions=decisions,
             total_ms=total_ms,
             answer_mode=answer_mode,
+            tool_calls=governed_tool_calls,
         )
 
     def close(self) -> None:
@@ -435,3 +502,80 @@ class GovernedClient:
         if len(sinks) == 1:
             return sinks[0]
         return MultiSink(sinks)
+
+    def _build_tool_policy_refs(self, requested_tool_names: list[str]) -> list[str]:
+        """Synthesize ``policy:allow:tool:<n>`` / ``policy:block:tool:<n>`` refs.
+
+        v0.2 semantics: any requested tool name not in the configured allowlist
+        contributes a ``policy:block:tool:<n>`` ref, which the substrate's
+        policy_gate matches against ``policy:block:*`` and propagates to
+        action_gate. Names already on the allowlist contribute an explicit
+        ``policy:allow:tool:<n>`` ref for trace clarity.
+        """
+        if not requested_tool_names:
+            return []
+        allow_set = set(self._tool_allowlist)
+        refs: list[str] = []
+        for name in requested_tool_names:
+            if name in allow_set:
+                refs.append(f"policy:allow:tool:{name}")
+            else:
+                refs.append(f"policy:block:tool:{name}")
+        return refs
+
+
+# ---------------------------------------------------------------------------
+# v0.2 module-level helpers (small, pure)
+# ---------------------------------------------------------------------------
+
+
+def _extract_tool_names(tools: list[dict] | None) -> list[str]:
+    """Return the list of tool function names from an OpenAI-shaped tool spec."""
+    if not tools:
+        return []
+    names: list[str] = []
+    for entry in tools:
+        if not isinstance(entry, dict):
+            continue
+        # OpenAI shape: {"type": "function", "function": {"name": ..., ...}}
+        fn = entry.get("function")
+        if isinstance(fn, dict):
+            name = fn.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+                continue
+        # Looser shape: {"name": ...}
+        name = entry.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _tool_call_name(tool_call: dict) -> str:
+    """Extract the function name from one OpenAI-shaped tool_call dict."""
+    if not isinstance(tool_call, dict):
+        return ""
+    fn = tool_call.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        if isinstance(name, str):
+            return name
+    name = tool_call.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _format_tool_block_message(
+    *, blocked_tool_names: list[str], allowlist: tuple[str, ...]
+) -> str:
+    """Render the user-facing assistant text when tool_calls are blocked."""
+    blocked_unique = ", ".join(sorted(set(n for n in blocked_tool_names if n))) or "<unnamed tool>"
+    if allowlist:
+        allowed = ", ".join(sorted(allowlist))
+        return (
+            f"AGIF Governor blocked tool calls: {blocked_unique}. "
+            f"Allowed tools: {allowed}."
+        )
+    return (
+        f"AGIF Governor blocked tool calls: {blocked_unique}. "
+        "No tools are currently allowlisted by the operator."
+    )

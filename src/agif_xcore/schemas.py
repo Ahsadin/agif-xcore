@@ -123,6 +123,9 @@ class ProposalEnvelope:
     finish_reason: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    # v0.2: parsed tool_calls returned by the upstream model. Substrate
+    # action_gate decides whether they are relayed to the client.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -175,7 +178,12 @@ class TraceEnvelope:
 
 @dataclass
 class AnswerEnvelope:
-    """What ``GovernedClient.ask()`` returns to the caller."""
+    """What ``GovernedClient.ask()`` returns to the caller.
+
+    The ``tool_calls`` field is populated only when the substrate's action_gate
+    decided ``allow`` for a tool-bearing turn. v0.1 callers that did not pass
+    ``tools`` to ``ask()`` will always see ``tool_calls=None`` and can ignore it.
+    """
 
     text: str
     trace_id: str
@@ -184,6 +192,7 @@ class AnswerEnvelope:
     decisions: SubstrateDecisions | None = None
     total_ms: int = 0
     answer_mode: str = "grounded_fact"
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------

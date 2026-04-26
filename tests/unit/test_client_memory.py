@@ -40,6 +40,7 @@ class _RecordingBackend:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = 30_000,
+        tools: list[dict] | None = None,
     ) -> BackendResponse:
         self.call_count += 1
         self.recorded_messages.append(list(messages))
@@ -72,6 +73,7 @@ class _WeakThenStrongBackend:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = 30_000,
+        tools: list[dict] | None = None,
     ) -> BackendResponse:
         self._call_count += 1
         self.recorded_messages.append(list(messages))

@@ -138,6 +138,18 @@ def add_serve_parser(subparsers: argparse._SubParsersAction) -> argparse.Argumen
             "with explicit auth and network controls."
         ),
     )
+    parser.add_argument(
+        "--tool-allowlist",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME...]",
+        help=(
+            "v0.2: comma-separated list of tool names allowed in OpenClaw "
+            "profile. Repeatable. Empty/unset preserves v0.1 behaviour "
+            "(every tool call fail-closed). When non-empty, the substrate's "
+            "action_gate decides allow/block per request."
+        ),
+    )
     parser.set_defaults(func=_run_serve)
     return parser
 
@@ -189,6 +201,18 @@ def _run_serve(args: argparse.Namespace) -> int:
                 )
                 return 2
 
+    # Flatten --tool-allowlist into a single tuple of unique names. Both
+    # comma-separated values and repeated flags are accepted.
+    tool_allowlist: tuple[str, ...] = ()
+    if args.tool_allowlist:
+        seen: list[str] = []
+        for item in args.tool_allowlist:
+            for piece in str(item).split(","):
+                name = piece.strip()
+                if name and name not in seen:
+                    seen.append(name)
+        tool_allowlist = tuple(seen)
+
     try:
         config = ProxyConfig(
             backend=args.backend,
@@ -207,6 +231,7 @@ def _run_serve(args: argparse.Namespace) -> int:
             proxy_api_key=resolved_proxy_api_key,
             memory_enabled=False if args.openclaw_profile else None,
             unsafe_bind=args.unsafe_bind,
+            tool_allowlist=tool_allowlist,
         )
         server = build_proxy_server(config, host=args.host, port=args.port)
     except (BackendError, ValueError) as exc:
@@ -215,6 +240,10 @@ def _run_serve(args: argparse.Namespace) -> int:
 
     if args.openclaw_profile:
         host_safe = _is_loopback_host(args.host) or args.unsafe_bind
+        if tool_allowlist:
+            tool_state = f"ALLOW {', '.join(tool_allowlist)}"
+        else:
+            tool_state = "OFF (every tool call fail-closed; v0.1 behaviour)"
         print(
             f"AGIF-XCore proxy (OpenClaw profile) at http://{args.host}:{args.port}\n"
             f"  served model id : {args.served_model_id}\n"
@@ -225,6 +254,7 @@ def _run_serve(args: argparse.Namespace) -> int:
             f"  trace visibility: {args.trace_visibility}\n"
             f"  auth            : {'ON' if resolved_proxy_api_key else 'OFF'}\n"
             f"  host safe       : {host_safe}\n"
+            f"  tool allowlist  : {tool_state}\n"
             f"\n"
             f"OpenClaw provider base_url: http://{args.host}:{args.port}/v1\n"
             f"\n"

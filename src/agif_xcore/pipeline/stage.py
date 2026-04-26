@@ -35,6 +35,11 @@ class PipelineContext:
     cited_refs: list[str] = field(default_factory=list)
     # M4: memory entries from prior turns, injected into the planner prompt
     memory_context: list[dict[str, str]] = field(default_factory=list)
+    # v0.2: optional OpenAI-shaped tool spec passed to the backend, and the
+    # tool_calls parsed back out of its response. Tool governance happens in
+    # the substrate, not in the pipeline.
+    tools: list[dict[str, Any]] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class PipelineStage(Protocol):

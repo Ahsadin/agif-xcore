@@ -86,6 +86,7 @@ class PlannerStage:
             temperature=ctx.turn.temperature,
             max_tokens=ctx.turn.max_tokens,
             timeout_ms=self.timeout_ms,
+            tools=ctx.tools,
         )
 
         ctx.raw_answer_text = response.text
@@ -93,6 +94,7 @@ class PlannerStage:
         ctx.finish_reason = response.finish_reason
         ctx.prompt_tokens = response.prompt_tokens
         ctx.completion_tokens = response.completion_tokens
+        ctx.tool_calls = response.tool_calls
 
         ctx.stage_outputs[self.name] = {
             "system_prompt_hash": _hash_prompt(self._system_prompt),

@@ -36,7 +36,10 @@ class _StubBackend:
     name: str = "stub"
     reply_text: str = "The backup cadence is daily incremental."
 
-    def complete(self, messages, *, model, temperature=0.0, max_tokens=None, timeout_ms=30000):
+    def complete(
+        self, messages, *, model, temperature=0.0, max_tokens=None,
+        timeout_ms=30000, tools=None,
+    ):
         return BackendResponse(
             text=self.reply_text, model_id=model,
             finish_reason="stop", prompt_tokens=10, completion_tokens=8, latency_ms=1,
@@ -236,13 +239,14 @@ SERVED_ID = "agif-governor/stub"
 UPSTREAM_ID = "stubmodel"
 
 
-def _make_stub_client(trace_file: Path):
+def _make_stub_client(trace_file: Path, tool_allowlist=()):
     from agif_xcore.client import GovernedClient
     return GovernedClient(
         backend=_StubBackend(),
         model=UPSTREAM_ID,
         memory_enabled=False,
         trace_file=trace_file,
+        tool_allowlist=tool_allowlist,
     )
 
 
@@ -251,6 +255,8 @@ def _start_openclaw_server(
     trace_file: Path,
     trace_visibility: str = "metadata",
     proxy_api_key: str | None = None,
+    tool_allowlist=(),
+    stub_backend=None,
 ) -> tuple[Any, int]:
     port = _free_port()
     config = ProxyConfig(
@@ -261,13 +267,74 @@ def _start_openclaw_server(
         trace_visibility=trace_visibility,
         trace_file=str(trace_file),
         proxy_api_key=proxy_api_key,
+        tool_allowlist=tool_allowlist,
     )
     server = build_proxy_server(config, host="127.0.0.1", port=port)
-    server.RequestHandlerClass._client = _make_stub_client(trace_file)
+    if stub_backend is None:
+        server.RequestHandlerClass._client = _make_stub_client(
+            trace_file, tool_allowlist=tool_allowlist,
+        )
+    else:
+        from agif_xcore.client import GovernedClient
+        server.RequestHandlerClass._client = GovernedClient(
+            backend=stub_backend,
+            model=UPSTREAM_ID,
+            memory_enabled=False,
+            trace_file=trace_file,
+            governance_enabled=True,
+            tool_allowlist=tool_allowlist,
+        )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     time.sleep(0.1)
     return server, port
+
+
+@dataclass
+class _ToolCallingStub:
+    """v0.2 stub backend that returns canned tool_calls when ``tools`` is passed.
+
+    When the request has tools, the stub returns one tool_call per name in
+    ``tool_call_names``. When the request has no tools, returns plain text.
+    """
+
+    name: str = "tool_stub"
+    fixed_text: str = "no tools needed"
+    tool_call_names: tuple[str, ...] = ()
+
+    def complete(
+        self, messages, *, model, temperature=0.0, max_tokens=None,
+        timeout_ms=30000, tools=None,
+    ):
+        if tools and self.tool_call_names:
+            tool_calls = [
+                {
+                    "id": f"call_{i}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+                for i, name in enumerate(self.tool_call_names)
+            ]
+            return BackendResponse(
+                text="",
+                model_id=model,
+                finish_reason="tool_calls",
+                prompt_tokens=12,
+                completion_tokens=4,
+                latency_ms=1,
+                tool_calls=tool_calls,
+            )
+        return BackendResponse(
+            text=self.fixed_text,
+            model_id=model,
+            finish_reason="stop",
+            prompt_tokens=8,
+            completion_tokens=4,
+            latency_ms=1,
+        )
+
+    def healthcheck(self):
+        return {"reachable": True, "loaded_models": [UPSTREAM_ID]}
 
 
 def _read_audit_events(trace_file: Path) -> list[dict]:
@@ -739,6 +806,286 @@ class OpenClawAuthTests(unittest.TestCase):
                 configured_secret, blob,
                 msg=f"configured server token leaked into {label}",
             )
+
+
+# ---------------------------------------------------------------------------
+# v0.2 — OpenClaw tool-call governance tests
+# ---------------------------------------------------------------------------
+
+
+def _read_trace_envelopes(trace_file: Path) -> list[dict]:
+    """Return the full TraceEnvelope JSONL records (skip audit events)."""
+    if not trace_file.exists():
+        return []
+    out: list[dict] = []
+    for line in trace_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("schema_version") and obj.get("turn_id"):
+            # TraceEnvelopes carry a turn_id and a non-event schema_version.
+            if obj.get("schema_version") != "openclaw_profile_event_v1":
+                out.append(obj)
+    return out
+
+
+class OpenClawToolGovernanceTests(unittest.TestCase):
+    """v0.2: tool-call governance via the substrate's action_gate."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.trace_file = Path(self._tmpdir.name) / "openclaw_tools.jsonl"
+        self._servers: list[Any] = []
+
+    def tearDown(self) -> None:
+        for s in self._servers:
+            try:
+                s.shutdown()
+            except Exception:
+                pass
+        self._tmpdir.cleanup()
+
+    def _start(
+        self,
+        *,
+        tool_allowlist=(),
+        tool_call_names: tuple[str, ...] = (),
+    ):
+        stub = _ToolCallingStub(tool_call_names=tool_call_names)
+        server, port = _start_openclaw_server(
+            trace_file=self.trace_file,
+            tool_allowlist=tool_allowlist,
+            stub_backend=stub,
+        )
+        self._servers.append(server)
+        return port
+
+    def _post(self, port: int, body: dict) -> tuple[int, dict]:
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    # ---- block / fail-closed paths ----
+
+    def test_no_allowlist_configured_blocks_all_tools(self) -> None:
+        """Empty allowlist preserves v0.1 fast fail-closed."""
+        port = self._start(tool_allowlist=(), tool_call_names=("search",))
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        # v0.1-style refusal text + abstain trace id
+        self.assertIn(
+            "does not execute tool or function calls",
+            payload["choices"][0]["message"]["content"],
+        )
+        self.assertEqual(payload["x_agif_trace"]["answer_mode"], "abstain")
+        self.assertTrue(payload["x_agif_trace"]["trace_id"].startswith("refusal-"))
+        # Audit event should be the v0.1 tool_refusal type, not v0.2 tool_blocked.
+        events = _read_audit_events(self.trace_file)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "tool_refusal")
+
+    def test_partial_allowlist_blocks_when_any_call_is_off_list(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("search", "delete"),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "find and delete"}],
+            "tools": [
+                {"type": "function", "function": {"name": "search"}},
+                {"type": "function", "function": {"name": "delete"}},
+            ],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        # Block path: text-only refusal naming the off-list tool
+        self.assertIsNone(payload["choices"][0]["message"].get("tool_calls"))
+        content = payload["choices"][0]["message"]["content"] or ""
+        self.assertIn("blocked tool calls", content.lower())
+        self.assertIn("delete", content)
+        self.assertEqual(payload["choices"][0]["finish_reason"], "stop")
+
+    def test_off_list_tool_call_writes_tool_blocked_audit_event(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("delete",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "delete it"}],
+            "tools": [
+                {"type": "function", "function": {"name": "delete"}},
+            ],
+        }
+        status, _payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        events = [
+            e for e in _read_audit_events(self.trace_file)
+            if e["event_type"] == "tool_blocked"
+        ]
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertIn("delete", ev["blocked_tool_names"])
+        self.assertEqual(ev["governance_enabled"], True)
+        self.assertFalse(ev["memory_enabled"])
+        # No raw arguments leak into the audit event itself. Re-serialize the
+        # event we read back and confirm the substring isn't there.
+        self.assertNotIn('"arguments"', json.dumps(ev))
+        self.assertNotIn("arguments", ev)
+
+    def test_response_trace_id_matches_tool_blocked_audit_id(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("delete",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "delete"}}],
+        }
+        _, payload = self._post(port, body)
+        resp_trace_id = payload["x_agif_trace"]["trace_id"]
+        events = [
+            e for e in _read_audit_events(self.trace_file)
+            if e["event_type"] == "tool_blocked"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["trace_id"], resp_trace_id)
+        # Block traces start with turn_, not refusal- (the model was actually
+        # called; the substrate decided after).
+        self.assertTrue(resp_trace_id.startswith("turn_"))
+
+    def test_finish_reason_stop_when_blocked(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("delete",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "delete"}}],
+        }
+        _, payload = self._post(port, body)
+        self.assertEqual(payload["choices"][0]["finish_reason"], "stop")
+        self.assertFalse(payload["x_agif_trace"]["tool_calls_allowed"])
+
+    # ---- allow path ----
+
+    def test_allowlisted_tool_passes_through_as_tool_calls(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("search",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "find the docs"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        msg = payload["choices"][0]["message"]
+        self.assertIsNone(msg.get("content"))
+        tool_calls = msg.get("tool_calls")
+        self.assertIsInstance(tool_calls, list)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "search")
+        self.assertTrue(payload["x_agif_trace"]["tool_calls_allowed"])
+
+    def test_finish_reason_tool_calls_when_allowed(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("search",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "find it"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        _, payload = self._post(port, body)
+        self.assertEqual(
+            payload["choices"][0]["finish_reason"], "tool_calls",
+        )
+
+    # ---- substrate decision is recorded ----
+
+    def test_substrate_action_gate_decision_recorded_in_trace(self) -> None:
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("search",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "x"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        _, payload = self._post(port, body)
+        envs = _read_trace_envelopes(self.trace_file)
+        self.assertEqual(len(envs), 1)
+        env = envs[0]
+        ag = env["substrate_decisions"]["action_gate_decision"]
+        self.assertEqual(ag["decision_class"], "allow")
+        self.assertEqual(ag["allowed_action_surface_or_none"], "tool_call")
+        self.assertEqual(env["turn_id"], payload["x_agif_trace"]["trace_id"])
+
+    # ---- text-only paths under v0.2 routing ----
+
+    def test_text_only_response_path_unchanged_when_tools_present_but_unused(self) -> None:
+        """If the model returns text instead of tool_calls, we relay the text."""
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=(),  # stub returns plain text
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "what is BM25?"}],
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        msg = payload["choices"][0]["message"]
+        self.assertIsNone(msg.get("tool_calls"))
+        self.assertEqual(payload["choices"][0]["finish_reason"], "stop")
+        # No tool_blocked event because nothing was blocked — model just used
+        # text. tool_calls_allowed reflects this.
+        self.assertFalse(payload["x_agif_trace"]["tool_calls_allowed"])
+
+    def test_tool_choice_none_with_allowlist_still_text_only(self) -> None:
+        """tool_choice='none' with no tools[] keeps the chat path."""
+        port = self._start(
+            tool_allowlist=("search",),
+            tool_call_names=("search",),
+        )
+        body = {
+            "model": SERVED_ID,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "none",
+        }
+        status, payload = self._post(port, body)
+        self.assertEqual(status, 200)
+        msg = payload["choices"][0]["message"]
+        # Plain chat path — no tool_calls in response, no audit events.
+        self.assertIsNone(msg.get("tool_calls"))
+        events = _read_audit_events(self.trace_file)
+        self.assertEqual(len(events), 0)
 
 
 # ---------------------------------------------------------------------------

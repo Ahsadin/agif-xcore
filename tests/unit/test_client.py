@@ -29,6 +29,7 @@ class _StubBackend:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = 30_000,
+        tools: list[dict] | None = None,
     ) -> BackendResponse:  # noqa: ARG002
         return BackendResponse(
             text=self.reply_text,

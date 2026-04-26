@@ -91,6 +91,7 @@ class OpenAICompatBackend:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
+        tools: list[dict[str, Any]] | None = None,
     ) -> BackendResponse:
         if not model:
             raise BackendContractError("model is required")
@@ -105,6 +106,10 @@ class OpenAICompatBackend:
         }
         if max_tokens is not None:
             body["max_tokens"] = int(max_tokens)
+        if tools:
+            # Forward the OpenAI-shaped tool spec verbatim. v0.2 governance happens
+            # in the substrate after the call, not by editing the request here.
+            body["tools"] = list(tools)
 
         url = f"{self._config.base_url}/chat/completions"
         started = time.perf_counter()
@@ -174,9 +179,23 @@ class OpenAICompatBackend:
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             # Small models (< 1B) occasionally return empty content for
-            # certain prompts. Return an empty string instead of crashing
+            # certain prompts. Also: when the model produces tool_calls, OpenAI
+            # spec says content is null. Return an empty string in either case
             # so the pipeline can classify this as uninformative.
             content = ""
+
+        # Parse tool_calls if the upstream model returned any. We do not
+        # mutate or filter them here — substrate governance decides what
+        # happens to them downstream.
+        tool_calls_raw = message.get("tool_calls")
+        tool_calls: list[dict[str, Any]] | None = None
+        if isinstance(tool_calls_raw, list) and tool_calls_raw:
+            cleaned: list[dict[str, Any]] = []
+            for tc in tool_calls_raw:
+                if isinstance(tc, dict):
+                    cleaned.append(tc)
+            if cleaned:
+                tool_calls = cleaned
 
         finish_reason = first.get("finish_reason")
         if finish_reason is not None and not isinstance(finish_reason, str):
@@ -200,6 +219,7 @@ class OpenAICompatBackend:
             completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
             raw=payload,
             latency_ms=latency_ms,
+            tool_calls=tool_calls,
         )
 
     def _enforce_model(self, *, requested: str, returned: str) -> None:

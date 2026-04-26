@@ -266,5 +266,132 @@ class ConfigValidationTests(unittest.TestCase):
             OpenAICompatBackend(OpenAICompatConfig(base_url=""))
 
 
+# ---------------------------------------------------------------------------
+# v0.2 — tool-call passthrough
+# ---------------------------------------------------------------------------
+
+
+class CompleteToolsPassthroughTests(unittest.TestCase):
+    """v0.2: ``tools`` and ``tool_calls`` flow through the OpenAI-compat backend."""
+
+    def _backend(self) -> OpenAICompatBackend:
+        return OpenAICompatBackend(
+            OpenAICompatConfig(
+                base_url="http://localhost:9999/v1",
+                model_enforcement="strict",
+            )
+        )
+
+    def _capturing_handler(self, response_payload: dict[str, Any]):
+        """Return a handler that captures the request body and yields a fixed response."""
+        captured: dict[str, Any] = {}
+
+        def handler(request, timeout=None):  # noqa: ARG001
+            data = request.data
+            if data:
+                try:
+                    captured["body"] = json.loads(data.decode("utf-8"))
+                except Exception:
+                    captured["body"] = None
+            return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+        return handler, captured
+
+    def test_complete_passes_tools_to_request_body(self) -> None:
+        backend = self._backend()
+        tools = [
+            {"type": "function", "function": {"name": "search", "parameters": {}}},
+            {"type": "function", "function": {"name": "fetch", "parameters": {}}},
+        ]
+        payload = {
+            "model": "gemma3:270m",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        handler, captured = self._capturing_handler(payload)
+        with patched_urlopen(handler):
+            backend.complete(
+                [{"role": "user", "content": "hi"}],
+                model="gemma3:270m",
+                tools=tools,
+            )
+        self.assertIn("body", captured)
+        self.assertIn("tools", captured["body"])
+        self.assertEqual(len(captured["body"]["tools"]), 2)
+        self.assertEqual(
+            captured["body"]["tools"][0]["function"]["name"], "search"
+        )
+
+    def test_complete_parses_tool_calls_from_response(self) -> None:
+        backend = self._backend()
+        payload = {
+            "model": "gemma3:270m",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"q": "weather"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+        handler, _ = self._capturing_handler(payload)
+        with patched_urlopen(handler):
+            result = backend.complete(
+                [{"role": "user", "content": "hi"}],
+                model="gemma3:270m",
+                tools=[{"type": "function", "function": {"name": "search"}}],
+            )
+        self.assertIsNotNone(result.tool_calls)
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0]["function"]["name"], "search")
+        self.assertEqual(result.finish_reason, "tool_calls")
+
+    def test_complete_without_tools_unchanged(self) -> None:
+        """v0.1 callers (no ``tools``) keep getting ``tool_calls=None``."""
+        backend = self._backend()
+        payload = {
+            "model": "gemma3:270m",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Hi."},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        handler, captured = self._capturing_handler(payload)
+        with patched_urlopen(handler):
+            result = backend.complete(
+                [{"role": "user", "content": "hi"}],
+                model="gemma3:270m",
+            )
+        self.assertNotIn("tools", captured["body"])
+        self.assertIsNone(result.tool_calls)
+        self.assertEqual(result.finish_reason, "stop")
+
+
+class BackendResponseDefaultsTests(unittest.TestCase):
+    def test_backend_response_tool_calls_default_none(self) -> None:
+        from agif_xcore.backends.base import BackendResponse
+
+        r = BackendResponse(text="hi", model_id="m")
+        self.assertIsNone(r.tool_calls)
+
+
 if __name__ == "__main__":
     unittest.main()

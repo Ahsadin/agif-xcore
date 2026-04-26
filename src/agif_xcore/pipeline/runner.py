@@ -55,10 +55,12 @@ class Runner:
         grounding: GroundingBundle,
         backend: ModelBackend,
         memory_context: list[dict[str, str]] | None = None,
+        tools: list[dict] | None = None,
     ) -> ProposalEnvelope:
         ctx = PipelineContext(
             turn=turn, grounding=grounding, backend=backend,
             memory_context=memory_context or [],
+            tools=tools,
         )
         pipeline_started = time.perf_counter()
 
@@ -104,4 +106,5 @@ def _context_to_proposal(ctx: PipelineContext) -> ProposalEnvelope:
         finish_reason=ctx.finish_reason,
         prompt_tokens=ctx.prompt_tokens,
         completion_tokens=ctx.completion_tokens,
+        tool_calls=list(ctx.tool_calls) if ctx.tool_calls else None,
     )

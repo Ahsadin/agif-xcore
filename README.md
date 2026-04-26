@@ -84,11 +84,15 @@ agif-xcore serve --backend ollama --model gemma3:270m --port 8088
 ### OpenClaw integration
 
 `--openclaw-profile` locks the proxy down for safe use behind OpenClaw: single served
-model id, memory off, tool/function calls refused, wildcard CORS off, optional bearer
-auth, and fail-closed audit events in the trace file. See [docs/openclaw.md](docs/openclaw.md).
-**v0.1 adapter MVP** — validated against OpenClaw 2026.4.22 for chat governance only;
-tool/action governance is not in scope. See the
-[v0.1 release note](docs/openclaw_v0_1_release_note.md).
+model id, memory off, tool/function calls refused by default, wildcard CORS off,
+optional bearer auth, and fail-closed audit events in the trace file. See
+[docs/openclaw.md](docs/openclaw.md).
+
+- **v0.1** — validated against OpenClaw 2026.4.22 for chat governance only.
+  See the [v0.1 release note](docs/openclaw_v0_1_release_note.md).
+- **v0.2** — adds substrate-routed *named* tool-call governance via
+  `--tool-allowlist`. Tool execution still happens at the client; the proxy
+  governs intent only. See [docs/openclaw_v0_2.md](docs/openclaw_v0_2.md).
 
 ### Library
 

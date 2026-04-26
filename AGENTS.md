@@ -14,7 +14,8 @@ Read these files before making changes:
 3. `docs/policies.md`
 4. `docs/schemas.md`
 5. `docs/openclaw.md` (when touching proxy `--openclaw-profile` behavior)
-6. `pyproject.toml`
+6. `docs/openclaw_v0_2.md` (when touching tool-call governance / `--tool-allowlist`)
+7. `pyproject.toml`
 
 Then read the specific code and tests for the area you are changing.
 

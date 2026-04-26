@@ -39,6 +39,13 @@ _TOOL_REFUSAL_MESSAGE = (
     "AGIF Governor MVP does not execute tool or function calls. "
     "Disable tool use in your OpenClaw provider settings and retry."
 )
+# v0.2: classify the request body's tool-related fields. Modern OpenAI
+# ``tools`` arrays go through the substrate's action_gate; everything else
+# (legacy ``functions``, multi-turn ``role: tool`` history, populated
+# ``tool_calls`` in history) keeps the v0.1 fast fail-closed path.
+_TOOL_INTENT_NONE = "none"
+_TOOL_INTENT_SUBSTRATE = "substrate"
+_TOOL_INTENT_FAIL_CLOSED = "fail_closed"
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -73,7 +80,11 @@ def _write_openclaw_audit_event(
 def _has_tool_payload(body: dict) -> tuple[bool, str]:
     """Detect any tool/function-call intent in the request body.
 
-    Returns ``(True, reason_code)`` when OpenClaw profile must fail closed.
+    Returns ``(True, reason_code)`` when the OpenClaw profile sees tool
+    intent. v0.1 used this to fail-closed unconditionally; v0.2 still uses
+    it as the trigger but classifies the intent further with
+    ``_classify_tool_intent``.
+
     ``"auto"`` values for ``tool_choice`` / ``function_call`` still permit
     tool invocation when schemas are present, so we treat anything other
     than the literal string ``"none"`` as a trigger.
@@ -101,6 +112,56 @@ def _has_tool_payload(body: dict) -> tuple[bool, str]:
     return False, ""
 
 
+def _classify_tool_intent(body: dict) -> tuple[str, str]:
+    """Classify a request's tool intent for v0.2 routing.
+
+    Returns ``(mode, reason_code)`` where ``mode`` is one of:
+
+    - ``"none"``: no tool intent; route to the regular chat path.
+    - ``"substrate"``: modern ``tools`` array present. Pass through to the
+      governed client; the substrate's action_gate decides allow/block based
+      on the operator's tool allowlist.
+    - ``"fail_closed"``: legacy ``functions`` array, ``tool_choice`` /
+      ``function_call`` directives, ``role: tool`` history messages, or
+      populated ``tool_calls`` in history. v0.2 keeps these on the v0.1 fail
+      closed path because they imply multi-turn tool flows out of MVP scope.
+    """
+    tools = body.get("tools")
+    if isinstance(tools, list) and len(tools) > 0:
+        return _TOOL_INTENT_SUBSTRATE, "tools_present"
+    functions = body.get("functions")
+    if isinstance(functions, list) and len(functions) > 0:
+        return _TOOL_INTENT_FAIL_CLOSED, "functions_present"
+    if "tool_choice" in body and body.get("tool_choice") != "none":
+        return _TOOL_INTENT_FAIL_CLOSED, "tool_choice_not_none"
+    if "function_call" in body and body.get("function_call") != "none":
+        return _TOOL_INTENT_FAIL_CLOSED, "function_call_not_none"
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "tool":
+                return _TOOL_INTENT_FAIL_CLOSED, "role_tool_in_messages"
+            tc = msg.get("tool_calls")
+            if isinstance(tc, list) and len(tc) > 0:
+                return _TOOL_INTENT_FAIL_CLOSED, "tool_calls_in_messages"
+    return _TOOL_INTENT_NONE, ""
+
+
+def _tool_call_function_name(tool_call: dict) -> str:
+    """Extract function name from one OpenAI-shaped ``tool_call`` dict."""
+    if not isinstance(tool_call, dict):
+        return ""
+    fn = tool_call.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        if isinstance(name, str):
+            return name
+    name = tool_call.get("name")
+    return name if isinstance(name, str) else ""
+
+
 class ProxyConfig:
     """Immutable configuration for the proxy server."""
 
@@ -123,6 +184,7 @@ class ProxyConfig:
         proxy_api_key: str | None = None,
         memory_enabled: bool | None = None,
         unsafe_bind: bool = False,
+        tool_allowlist: Sequence[str] = (),
     ) -> None:
         self.backend = backend
         self.model = model
@@ -145,6 +207,10 @@ class ProxyConfig:
         self.proxy_api_key = proxy_api_key
         self.memory_enabled = memory_enabled
         self.unsafe_bind = bool(unsafe_bind)
+        # v0.2: tool name allowlist. Empty = no tools allowed (v0.1 default
+        # behaviour: fast fail-closed). Non-empty = substrate-routed governance
+        # against the listed tools.
+        self.tool_allowlist: tuple[str, ...] = tuple(tool_allowlist)
 
         if self.openclaw_profile:
             if not self.served_model_id:
@@ -181,6 +247,7 @@ def build_proxy_server(
         governance_enabled=config.governance_enabled,
         grounding_paths=config.grounding_paths,
         trace_file=Path(config.trace_file) if config.trace_file else None,
+        tool_allowlist=config.tool_allowlist,
     )
     if config.memory_enabled is not None:
         client_kwargs["memory_enabled"] = config.memory_enabled
@@ -342,11 +409,25 @@ def build_proxy_server(
                 self._respond_json(400, {"error": {"message": f"invalid JSON: {exc}"}})
                 return
 
+            substrate_routed_tools: list[dict] | None = None
             if self._config.openclaw_profile:
-                has_tool, reason = _has_tool_payload(body)
-                if has_tool:
-                    self._respond_openclaw_tool_refusal(reason)
+                intent_mode, intent_reason = _classify_tool_intent(body)
+                if intent_mode == _TOOL_INTENT_FAIL_CLOSED:
+                    # v0.1 fast fail for legacy/multi-turn tool patterns.
+                    self._respond_openclaw_tool_refusal(intent_reason)
                     return
+                if intent_mode == _TOOL_INTENT_SUBSTRATE:
+                    if not self._config.tool_allowlist:
+                        # No tools allowlisted by the operator: keep v0.1
+                        # default-block behaviour without burning a backend
+                        # call. Audit event is the existing tool_refusal.
+                        self._respond_openclaw_tool_refusal(intent_reason)
+                        return
+                    raw_tools = body.get("tools")
+                    if isinstance(raw_tools, list):
+                        substrate_routed_tools = [
+                            t for t in raw_tools if isinstance(t, dict)
+                        ]
                 req_model = body.get("model")
                 if req_model != self._config.served_model_id:
                     self._respond_openclaw_model_mismatch(req_model)
@@ -373,7 +454,9 @@ def build_proxy_server(
             started = time.perf_counter()
             try:
                 if self._config.openclaw_profile:
-                    answer = self._client.ask(user_text)
+                    answer = self._client.ask(
+                        user_text, tools=substrate_routed_tools,
+                    )
                 elif req_model != self._config.model:
                     answer = GovernedClient(
                         backend=self._client.backend,
@@ -409,12 +492,72 @@ def build_proxy_server(
                 else req_model
             )
 
+            tool_calls_allowed = bool(answer.tool_calls)
+
+            # v0.2: when the substrate did not allow tool_calls through under
+            # the OpenClaw profile, emit a dedicated audit event so operators
+            # can grep for blocked tool intent without parsing TraceEnvelopes.
+            # Only fires when the request was substrate-routed (had tools[])
+            # and the answer did not surface any allowed tool_calls.
+            if (
+                self._config.openclaw_profile
+                and substrate_routed_tools is not None
+                and not tool_calls_allowed
+            ):
+                ag: dict[str, Any] = {}
+                if answer.decisions is not None and answer.decisions.action_gate_decision:
+                    ag = answer.decisions.action_gate_decision
+                # Blocked-name set: every requested tool name not in the
+                # allowlist. Names only — never arguments.
+                allowed_set = set(self._config.tool_allowlist)
+                requested_names: list[str] = []
+                for entry in substrate_routed_tools:
+                    fn = entry.get("function") if isinstance(entry, dict) else None
+                    if isinstance(fn, dict):
+                        nm = fn.get("name")
+                        if isinstance(nm, str) and nm:
+                            requested_names.append(nm)
+                blocked_names = sorted(
+                    {n for n in requested_names if n not in allowed_set}
+                )
+                _write_openclaw_audit_event(
+                    self._config.trace_file,
+                    {
+                        "schema_version": "openclaw_profile_event_v1",
+                        "event_type": "tool_blocked",
+                        "trace_id": answer.trace_id,
+                        "created": int(time.time()),
+                        "served_model_id": self._config.served_model_id,
+                        "upstream_model_id": self._config.model,
+                        "answer_mode": answer.answer_mode,
+                        "reason_code": ag.get(
+                            "reason_code", "action_gate_block"
+                        ),
+                        "blocked_tool_names": blocked_names,
+                        "governance_enabled": self._config.governance_enabled,
+                        "memory_enabled": bool(self._config.memory_enabled),
+                    },
+                )
+
             content = answer.text
             if self._config.trace_visibility in ("footer", "both"):
                 content = (
                     f"{content}\n\nAGIF: mode={answer.answer_mode}; "
                     f"trace={answer.trace_id}"
                 )
+
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": content,
+            }
+            finish_reason = "stop"
+            if tool_calls_allowed:
+                # OpenAI shape: when tool_calls is present, content is null and
+                # finish_reason is "tool_calls". We keep content=null per spec
+                # so OpenClaw's parser handles the response correctly.
+                assistant_message["content"] = None
+                assistant_message["tool_calls"] = list(answer.tool_calls)
+                finish_reason = "tool_calls"
 
             response_payload = {
                 "id": f"chatcmpl-{answer.trace_id}",
@@ -424,8 +567,8 @@ def build_proxy_server(
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": content},
-                        "finish_reason": "stop",
+                        "message": assistant_message,
+                        "finish_reason": finish_reason,
                     }
                 ],
                 "usage": {
@@ -442,6 +585,7 @@ def build_proxy_server(
                     "memory_enabled": self._client.memory_enabled,
                     "total_ms": answer.total_ms,
                     "refs": answer.refs,
+                    "tool_calls_allowed": tool_calls_allowed,
                 },
             }
 
