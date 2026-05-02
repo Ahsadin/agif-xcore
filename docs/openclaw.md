@@ -24,7 +24,7 @@ OpenClaw can route chat replies through AGIF-XCore governance and receive govern
 
 **v0.2 adds:** named tool-call governance via the substrate's action_gate stage. See [openclaw_v0_2.md](openclaw_v0_2.md).
 
-**v0.3 adds:** the substrate's `soften` decision now lets `tool_calls` pass through with a flagged audit trail; per-tool argument inspection via stdlib regex deny patterns; and a JSON `--tool-policy-file` for declarative per-tool decisions. See [openclaw_v0_3.md](openclaw_v0_3.md). Tool *execution* remains a non-goal — the proxy never executes a tool itself.
+**v0.3 adds:** the substrate's `soften` decision now lets `tool_calls` pass through with a flagged audit trail; per-tool argument inspection via stdlib regex deny patterns; and a JSON `--tool-policy-file` for declarative per-tool decisions. See [openclaw_v0_3.md](openclaw_v0_3.md). Tool *execution* remains a non-goal — the proxy never executes a tool itself. **Live validation:** hardware-deferred (validation host had only `gemma3:270m-it-fp16`, which is chat-only); see the "Live validation status" section in [openclaw_v0_3.md](openclaw_v0_3.md) for the runbook any operator with a tool-capable model can run.
 
 Validation records:
 

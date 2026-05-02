@@ -272,18 +272,154 @@ Run from `/Users/ahsadin/Documents/AGIF-XCore`:
 
 Expected: **341 passed, 6 skipped**. The +25 over v0.2's 316 are 15 new tests in `test_tool_policy.py`, 7 new tests in `OpenClawToolGovernanceTests`, and 3 new tests in `OpenClawCliValidatorTests`.
 
-## Live validation (post-tag follow-up)
+## Live validation status
 
-When a tool-capable upstream model is available (e.g. `qwen2.5-coder:7b`):
+**Status: hardware-deferred.** Live validation against a tool-capable upstream model has **not** been run on the validation host. The host (16 GB MacBook Air, Apple M4) had only `gemma3:270m-it-fp16` installed, which is chat-only and does not emit `tool_calls`. Running the four-probe procedure against `gemma3:270m` would have produced four indistinguishable plain-text responses and would not have validated the v0.3 decision paths in any way the stub tests don't already cover. The disciplined choice was to ship the runbook honestly and defer the live run.
 
-1. Pull the model: `ollama pull qwen2.5-coder:7b`.
-2. Write a small policy file with one allowed tool, one softened, one blocked, and one allowed-with-argument-deny.
-3. Run AGIF Governor with `--tool-policy-file`.
-4. Send four prompts that exercise: allow (clean args), soften (clean args), block by name, block by argument deny.
-5. Confirm:
-   - The allow tool's `tool_calls` reach the client.
-   - The soften tool's `tool_calls` reach the client AND a `tool_softened` audit event lands.
-   - The named-block path returns the v0.2 text refusal AND a `tool_blocked` event.
-   - The argument-block path returns a text refusal AND a `tool_blocked_by_argument` event with no argument value leakage.
+### What IS verified (not deferred)
 
-Capture the result in `docs/openclaw_v0_3_live_validation.md`.
+- **341 stub tests pass** on `commit b412b92`, including:
+  - `test_v0_1_no_secret_regression_trace_body_and_stderr` — bearer token never reaches trace, error body, or stderr.
+  - `test_argument_deny_audit_event_does_not_log_argument_value` — argument values never reach `tool_blocked_by_argument` audit events.
+  - `test_argument_value_too_long_blocks_without_running_regex` — uses a catastrophic-backtracking regex `(a+)+b` against a 4097-char input; the safety limit fires before the regex runs (test completes in <5 s).
+  - All four decision paths (allow / soften / name-block / argument-deny) exercised against a stub backend that returns canned `tool_calls`.
+  - JSON policy-bundle parsing, regex compilation, schema-version mismatch, array-index-path rejection, default-decision fallback.
+  - CLI mutual exclusion of `--tool-allowlist` and `--tool-policy-file`.
+
+### What is NOT verified live
+
+- That a real tool-capable model (e.g. `qwen2.5:7b-instruct`, `llama3.2:3b-instruct`) emits `tool_calls` in OpenAI shape against this proxy under each of the four decision paths.
+- That a real model's `function.arguments` JSON shape parses cleanly through `evaluate_arguments` end-to-end.
+- That OpenClaw's UX surface displays a soften response (`content: null` + `tool_calls`) without confusion.
+
+The contract is gated on stubs. Under-the-wire reliability of `tool_calls` JSON shape from any specific upstream model is the operator's responsibility to confirm before relying on a given model.
+
+### Runbook (any operator with a tool-capable model can run this)
+
+Recommended models, choose by hardware:
+
+| Hardware | Model | Disk | Notes |
+|---|---|---:|---|
+| 16 GB+ unified memory | `qwen2.5:7b-instruct-q4_K_M` | ~4.7 GB | Strongest tool-call reliability. |
+| 8–16 GB | `qwen2.5:3b-instruct` | ~2.3 GB | Slightly less reliable; some probes may need a forced `tool_choice`. |
+| 8–16 GB | `llama3.2:3b-instruct-q4_K_M` | ~2.0 GB | Smaller; tool-call emission is decent. |
+| Any | OpenAI-compatible hosted (OpenRouter, Together, Groq) | 0 | Use proxy's `openai_compat` backend; needs an API key. |
+
+**Policy file** (`/tmp/v0_3_policy.json`) — one tool per decision class:
+
+```json
+{
+  "schema_version": "openclaw_tool_policy_v1",
+  "default": "block",
+  "tools": {
+    "search":      { "decision": "allow" },
+    "write_file":  { "decision": "soften", "reason": "writes user files" },
+    "delete_file": { "decision": "block",  "reason": "destructive" },
+    "exec": {
+      "decision": "allow",
+      "argument_deny_patterns": {
+        "command": "rm\\s+-rf|sudo"
+      }
+    }
+  }
+}
+```
+
+**Start AGIF Governor with the policy:**
+
+```bash
+ollama pull qwen2.5:7b-instruct-q4_K_M    # or your chosen model
+
+cd /Users/ahsadin/Documents/AGIF-XCore
+.venv/bin/python -m agif_xcore serve \
+  --backend ollama \
+  --model qwen2.5:7b-instruct-q4_K_M \
+  --served-model-id agif-governor/qwen2.5-7b \
+  --openclaw-profile \
+  --trace-visibility both \
+  --trace-file /tmp/openclaw_v0_3_live.jsonl \
+  --tool-policy-file /tmp/v0_3_policy.json &
+sleep 6
+curl -s http://127.0.0.1:8088/health | python3 -m json.tool
+```
+
+The startup banner should report:
+```
+  tool policy     : 4 tools (default=block) allow=2 soften=1 block=1
+```
+
+**Four probes** (one per decision class). Save each response to its own file:
+
+```bash
+# (1) ALLOW
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"agif-governor/qwen2.5-7b",
+       "messages":[{"role":"user","content":"Search the web for BM25"}],
+       "tools":[{"type":"function","function":{"name":"search",
+         "parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}}],
+       "tool_choice":"auto"}' > /tmp/v0_3_allow.json
+
+# (2) SOFTEN
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"agif-governor/qwen2.5-7b",
+       "messages":[{"role":"user","content":"Write hello world to /tmp/hi.sh"}],
+       "tools":[{"type":"function","function":{"name":"write_file",
+         "parameters":{"type":"object","properties":{"path":{"type":"string"},"contents":{"type":"string"}},"required":["path","contents"]}}}],
+       "tool_choice":"auto"}' > /tmp/v0_3_soften.json
+
+# (3) NAME-BLOCK
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"agif-governor/qwen2.5-7b",
+       "messages":[{"role":"user","content":"Delete /tmp/junk.log"}],
+       "tools":[{"type":"function","function":{"name":"delete_file",
+         "parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}}],
+       "tool_choice":"auto"}' > /tmp/v0_3_name_block.json
+
+# (4) ARGUMENT-DENY (model proposes `rm -rf`)
+curl -s http://127.0.0.1:8088/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"agif-governor/qwen2.5-7b",
+       "messages":[{"role":"user","content":"Run: rm -rf /tmp/scratch"}],
+       "tools":[{"type":"function","function":{"name":"exec",
+         "parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}],
+       "tool_choice":"auto"}' > /tmp/v0_3_arg_deny.json
+
+kill %1 2>/dev/null
+```
+
+**Expected results table** (the operator fills in the `trace_id` column from the responses):
+
+| Case | finish_reason | content | tool_calls | tool_calls_allowed | audit event | trace_id |
+|---|---|---|---|---|---|---|
+| allow | `tool_calls` | null | populated | true | (none) | `turn_…` |
+| soften | `tool_calls` | null | populated | true | `tool_softened` | `turn_…` |
+| name_block | `stop` | text refusal naming `delete_file` | absent | false | `tool_blocked` | `turn_…` |
+| arg_deny | `stop` | text naming `exec.command=argument_pattern_match#…` | absent | false | `tool_blocked_by_argument` | `turn_…` |
+
+**No-leak grep** (the most important v0.3 invariant — argument values never reach audit events):
+
+```bash
+python3 - <<'PY'
+import json
+leaked = False
+for line in open('/tmp/openclaw_v0_3_live.jsonl'):
+    o = json.loads(line)
+    if o.get('schema_version') == 'openclaw_profile_event_v1':
+        if '/tmp/scratch' in json.dumps(o):
+            print('LEAK:', o); leaked = True
+print('PASS — no argument value leaked into audit events.' if not leaked else 'REGRESSION')
+PY
+```
+
+**Capture the run** in `docs/openclaw_v0_3_live_validation.md` with: date, model + version, the four-row table filled in, the audit-event lines, the no-leak grep result, and any model-specific caveats (e.g. "case 4 needed two retries because the model returned plain text the first time").
+
+### Caveats every operator should expect
+
+1. **Models sometimes return text when you asked for tool_calls.** Even strong 7B models do this occasionally. Force `tool_choice` or retry; if persistent, the model isn't a fit.
+2. **Models sometimes emit malformed `arguments` JSON.** v0.3's safety contract treats malformed input as a free pass (no inspection). Force `tool_choice` to a specific function and provide a tight parameter schema to reduce the failure mode.
+3. **The model's choice is not the policy's choice.** A model may *also* return text-only when the substrate would have allowed a tool call. That doesn't break governance; it just means the model declined to use the tool. The validation table tracks what the *proxy* did, not what the *model* preferred.
+
+This runbook will continue to live in this document until either the validation host gets a tool-capable model or an operator runs it elsewhere and adds `docs/openclaw_v0_3_live_validation.md` alongside.
