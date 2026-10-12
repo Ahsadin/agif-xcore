@@ -17,17 +17,18 @@ Prepared 2026-10-12. I applied the coordinator's RULEBOOK exactly (H1–H8, C1�
   - **L3-A**, biogas substrate log: 62.0
   - **L1-A**, vet preventive plans: 60.0, which is fragile
   - The other twelve and the BASELINE are KILL.
-- **Hard-rule risk.** Seven ideas carry an H4 or H8 risk flag from competitors or substitutes I found or confirmed:
+- **Hard-rule risk.** Nine finalists and the BASELINE carry an "at risk" H4 or H8 flag. Several come from competitors or substitutes I found or confirmed:
   - Butchers already use white-label pre-order apps (L5-F2).
   - A free German-language stable app lists billing (L1-B).
   - Couriers offer pay-by-link for cash-on-delivery parcels (L5-F1).
   - EU-funded free CRA tools for micro and small firms are being built (L2-F1).
+  - A further mass-balance software vendor (agriportance) sits next to the biogas idea (L3-A).
 - **The BASELINE is weaker than the brief implies.**
   - €9.90 includes 19% VAT, so net revenue is €8.32 and gross margin is about 60%.
   - About 1,900 paying families are needed before any acquisition spend, not 1,000.
   - About 3,000–7,000 are needed once the cost of replacing churned customers is counted.
   - I score it **46.5**.
-- **Against the BASELINE.** Fourteen ideas beat it numerically. Nine beat it by more than 3 points, which I treat as scoring noise.
+- **Against the BASELINE.** Fourteen of the 15 finalists beat it numerically (L5-F3 ties). Ten beat it by more than the 3 points I treat as scoring noise; one of them, L1-C, only marginally.
 - **Distribution is the binding constraint.**
   - Only two ideas have a verified, dense, named channel:
     - Fachverband Biogas: about 4,700–5,000 members in 23–26 regional groups (L3-A).
@@ -299,7 +300,7 @@ Weights: C1 10 · C2 15 · C3 10 · C4 15 · C5 15 · C6 5 · C7 10 · C8 10 · 
 
 | C | Score | One-line justification |
 |---|---|---|
-| C1 Pain | 4 | A per-SKU chore that becomes binding only on 11 Dec 2027 ([via lens 2](https://www.springlex.eu/en/packages/cra/cra-regulation/article-19/)). |
+| C1 Pain | 4 | A per-SKU chore that becomes binding only on 11 Dec 2027 ([EUR-Lex, via lens 2](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=OJ%3AL_202402847); duties per [Springlex Art. 19, via lens 2](https://www.springlex.eu/en/packages/cra/cra-regulation/article-19/)). |
 | C2 WTP / payer | 4 | Awareness is low. German shops expect compliance bundled into their legal-text subscriptions (JUDGEMENT). |
 | C3 Gap | 4 | Thin evidence. GPSR and legal-text providers sit next door ([xictron, via lens 2](https://www.xictron.com/de/blog/cyber-resilience-act-online-shops-pflichten-2026/)). |
 | C4 Distribution | 4 | Agencies and chamber webinars are unvalidated. The big German shop-compliance channels (legal-text and cease-and-desist protection providers) are more likely copiers than partners (JUDGEMENT). |
@@ -900,7 +901,10 @@ The non-German finalists, L3-C (Switzerland) and L5-F1 (Romania), are evidence-d
   - steady-state acquisition spend included;
   - newly found competitors or substitutes (L1-B, L2-F1, L5-F1, L5-F2).
 - **The ordering is largely stable.** L4-F1, L3-A and L1-A are in the lenses' top four as well.
-- **Biggest drops:** L5-F1 (−9.0), L5-F2 (−11.0), L3-B (−8.5), L1-B (−9.0). In each case a competitor or substitute surfaced, or the realistic price breaks market sufficiency.
+- **Biggest drops:** L5-F2 (−11.0), L4-F3 (−9.5), L5-F1 (−9.0), L1-B (−9.0), L3-B (−8.5). The causes:
+  - a competitor or substitute surfaced (L5-F2, L5-F1, L1-B);
+  - the realistic price breaks market sufficiency (L3-B);
+  - the sales cycle cannot deliver money within 90 days or the goal within 24 months (L4-F3).
 
 ---
 
