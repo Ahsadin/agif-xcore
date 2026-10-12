@@ -110,6 +110,11 @@ The surviving gap is size-agnostic EU product rules for micro firms: the Cyber R
   - UK PSTI dates
 - **Penalty amounts not found** for Belgian Peppol, Digital Waste Tracking, the Battery passport (national rules under Art. 93) and the AU smart-device rules.
 - **H8 tests are incomplete.** Funding or profitability of Awaab/DWT/FSMA vendors was not verified. H8 is "funded or clearly profitable" and those kills rest on vendor counts. They are at least C3 failures.
+- **Two numbers could not be traced to a named source.** Both appeared only in search summaries that did not attribute them:
+  - "~180,000 premises in scope of Martyn's Law (both tiers)", said to come from a Home Office impact assessment;
+  - "~£26 per legal entity per year" for the Defra Digital Waste Tracking service.
+- **Conflicting dates.** Sources disagree on whether Digital Waste Tracking Phase 2 starts in April or October 2027.
+- **Martyn's Law fine figures.** The standard-tier maximum of £10k comes from one law-firm summary. Another source cites £50k per day; this is unreconciled.
 
 ---
 
