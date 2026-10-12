@@ -31,18 +31,18 @@ The Q4 root-cause classes, as used across the notes, are: (a) too small a priori
 
 ### Eight hard rules filter, and ten weighted criteria rank
 
-The notes apply the coordinator's rulebook consistently but do not reproduce it word for word. The wording below is reconstructed from the brief and from how all ten notes applied it.
+The rulebook below is the coordinator's exact wording, given identically to every researcher and evaluator. Violating any one hard rule kills an idea.
 
-| Hard rule | Plain meaning, as applied | Typical failure in this study |
+| Hard rule | Exact rule | Typical failure in this study |
 |---|---|---|
-| H1 No AI in the core | Deterministic rules only; no OCR, machine learning or speech recognition | BASE uses a keypad "press 1"; L3-A drops the OCR a rival uses |
-| H2 Solo-buildable MVP in ≤12 weeks | One person ships a usable first version in 12 weeks | A tenant pack built on the EU Digital Identity Wallet, which is not yet live |
-| H3 No licence-gated core | No banking, payment-institution, e-money, credit, insurance, legal-advice, tax-advice, medical-device or debt-collection licence; the founder never holds client money | Billing care insurers over the health-IT network (flagged as a risk) |
-| H4 Platform-proof | Dies if big tech (the rule names firms such as Amazon), banks or the niche's dominant incumbent can ship it free or revoke the access it needs | Instant-payment checkout in Germany after banks launched Wero |
-| H5 A real payer | Someone pays directly because they gain money or time; no ad or data-selling revenue | A moving-house concierge paid by selling switching leads |
-| H6 Ethics filter | No surveillance without the person's own consent, no paid credit to consumers, no pressure on vulnerable people, no fake urgency | A tool paid by success fee when disabled employees disclose their status |
-| H7 No cold-start marketplace | Must not need two sides before it delivers value | Night-shift childcare matching for nurses |
-| H8 Not crowded | Killed only if three or more funded or clearly profitable rivals sell the same thing at a similar price | Self-managed condominium software in Germany |
+| H1 No AI | Core value delivered by deterministic software (rules, schedules, records, forms, calculations, payments, telephony, messaging, integrations). No LLMs, machine learning, OCR, speech recognition or computer vision in the core value | BASE uses a keypad "press 1"; L3-A drops the OCR a rival uses |
+| H2 Solo-buildable | One developer ships a sellable MVP in ≤ 12 weeks with standard web/mobile stacks and off-the-shelf APIs. No hardware manufacturing, inventory, vehicles or physical logistics | A tenant pack built on the EU Digital Identity Wallet, which is not yet live |
+| H3 No licence-gated core | The founder must not need a banking, payment-institution, e-money, credit, insurance, legal-advice, tax-advice, medical-device or debt-collection licence to deliver the core value. Building on a licensed partner's API is allowed | Billing care insurers over the health-IT network (flagged as a risk) |
+| H4 Platform-proof | Must not be made redundant within about 2 years by a free feature from Apple, Google, Microsoft, Meta, Amazon, banks or the niche's dominant incumbent; must not depend on one revocable gatekeeper permission (scraping, accessibility APIs, unofficial APIs, one marketplace's goodwill) | Instant-payment checkout in Germany after banks launched Wero |
+| H5 Real payer | Someone pays who directly feels the pain or has a direct financial reason to pay. No ad-funded, data-selling or "monetise later" models | A moving-house concierge paid by selling switching leads |
+| H6 Ethics | No interest-bearing lending or BNPL, gambling or speculative trading, alcohol/tobacco/adult content, surveillance of people without their own consent, dark patterns, or reselling user data | A tool paid by success fee when disabled employees disclose their status |
+| H7 No cold-start marketplace | No two-sided marketplace that needs liquidity on both sides before it delivers value | Night-shift childcare matching for nurses |
+| H8 Not crowded | Not 3 or more funded or clearly profitable competitors already selling the same thing in the chosen launch market at a similar price, unless there is a specific wedge they structurally cannot copy | Self-managed condominium software in Germany |
 
 | Criterion | Weight | What earns a high score |
 |---|---|---|
@@ -57,7 +57,7 @@ The notes apply the coordinator's rulebook consistently but do not reproduce it 
 | C9 Risk (inverse) | 5 | Low legal, liability and reputational exposure |
 | C10 Speed to proof | 5 | A money signal within about 90 days for €2,000 or less |
 
-Each criterion is scored 0–10. The weighted score is Σ(score × weight) ÷ 10, so the maximum is 100. A score of **75 or more is BUILD, 60–74 is TEST, and under 60 is KILL. Any hard-rule violation is KILL.** Evaluators flagged an idea "at risk" when a credible mechanism could break a hard rule but the evidence did not prove it under the rule's exact wording. An "at risk" flag is a watch item, not a violation.
+Each criterion is scored 1–10. The weighted score is Σ(score × weight) ÷ 10, so the maximum is 100. A score of **75 or more is BUILD, 60–74 is TEST, and under 60 is KILL. Any hard-rule violation is KILL.** Evaluators flagged an idea "at risk" when a credible mechanism could break a hard rule but the evidence did not prove it under the rule's exact wording. An "at risk" flag is a watch item, not a violation.
 
 ### The baseline and the goal
 
