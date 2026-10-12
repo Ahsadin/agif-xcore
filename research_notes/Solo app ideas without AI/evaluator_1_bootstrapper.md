@@ -36,7 +36,7 @@ Weights: C1 10 · C2 15 · C3 10 · C4 15 · C5 15 · C6 5 · C7 10 · C8 10 · 
 | ID | Idea (short) | Hard-rule flags | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 | Score | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | L1-A | Vet preventive-care plans (DE) | none | 5 | 6 | 7 | 5 | 7 | 8 | 6 | 6 | 5 | 6 | **60.5** | TEST |
-| L1-B | Boarding-stable billing (DE) | none (H4/H8 at risk: free Stabley) | 5 | 4 | 4 | 4 | 5 | 6 | 7 | 4 | 8 | 6 | **49.5** | KILL |
+| L1-B | Boarding-stable billing (DE) | none (H4 at risk: free Stabley) | 5 | 4 | 4 | 4 | 5 | 6 | 7 | 4 | 8 | 6 | **49.5** | KILL |
 | L1-C | Music-teacher admin (DE) | none | 4 | 4 | 5 | 5 | 5 | 5 | 8 | 4 | 8 | 6 | **51.5** | KILL |
 | L2-F1 | CRA Logbook (EU, launch DE) | none (H8 at risk) | 5 | 5 | 4 | 5 | 6 | 8 | 5 | 5 | 6 | 6 | **53.0** | KILL |
 | L2-F2 | CRA vault for importers (EU, launch DE) | none (H4 at risk) | 4 | 4 | 4 | 4 | 5 | 6 | 7 | 3 | 6 | 5 | **46.0** | KILL |
@@ -52,7 +52,7 @@ Weights: C1 10 · C2 15 · C3 10 · C4 15 · C5 15 · C6 5 · C7 10 · C8 10 · 
 | L5-F3 | WP-Wächter, heat-pump check (DE) | none (H4 at risk: maker-controlled data) | 5 | 4 | 4 | 6 | 3 | 8 | 4 | 2 | 6 | 6 | **44.5** | KILL |
 | BASE | Daily check-in call, 65+ (DE) | none | 5 | 4 | 5 | 3 | 3 | 9 | 5 | 3 | 3 | 7 | **42.5** | KILL |
 
-"At risk" means I found evidence that pushes towards a violation, but not enough to prove one under the rule's exact wording. Each case is explained in section 2.
+"At risk" means evidence, or a clearly labelled judgement, points to a specific mechanism that could cause a violation, but not enough to prove one under the rule's exact wording. Section 2 explains each case. Where the only threat is generic copying or bundling, which every SaaS faces, section 2 says "watch" and the table shows nothing.
 
 ---
 
@@ -433,7 +433,7 @@ Net: 9 of the 12 German launches are evidence-driven and 3 are partly anchored (
 - **H1 pass.**
 - **H2 pass, with risk.** A hosted ID + QR + record MVP is buildable. The data model must still track Annex XIII and standards that are still changing.
 - **H3 pass.** No listed licence category applies.
-- **H4 pass, at risk.** Cell, pack or system suppliers could bundle passports.
+- **H4 pass (watch).** Cell, pack or system suppliers could bundle passports (JUDGEMENT; no evidence either way).
 - **H5–H7 pass.**
 - **H8 pass on evidence only.** Passport vendors exist (Scantrust, Circuland, dpp-tool, Tracepas per lens 2). Funded enterprise players exist too (Circulor, Circularise, Minespider; JUDGEMENT). No SME pricing was found, so "a similar price" cannot be shown.
 
@@ -651,7 +651,7 @@ Net: 9 of the 12 German launches are evidence-driven and 3 are partly anchored (
   - Preparing applications for third parties raises the Legal Services Act (RDG) question. In 2021 the Federal Court of Justice held that a rule-based contract-document generator is not a legal service (BGH "Smartlaw", I ZR 113/20; JUDGEMENT, background knowledge).
   - The founder must never submit documents or collect claims for homes, which would need a debt-collection licence.
   - Lens 4's counsel check (KT5) is mandatory.
-- **H4 pass, at risk.** Myosotis is funded and has 400+ care-home customers for its relatives app (per lens 4), so it could bundle this. Care-home ERPs could add the feature (unverified).
+- **H4 pass (watch).** Myosotis is funded and has 400+ care-home customers for its relatives app (per lens 4), so it could bundle this. Care-home ERPs could add the feature (unverified).
 - **H5 pass.** The home has a quantified money reason (PwC 2026, per lens 4).
 - **H6 pass.** No success fees, and the family portal is consent-based.
 - **H7 pass.**
@@ -824,7 +824,7 @@ Net: 9 of the 12 German launches are evidence-driven and 3 are partly anchored (
   - **No merchant fees are published.**
   - Card payment links (Stripe, Netopia, EuPlătesc) work today.
 - **H3 pass.** Money flows from the buyer to the merchant's licensed processor.
-- **H4 pass, at risk:**
+- **H4 pass (watch):**
   - Each merchant's WhatsApp account is subject to Meta's enforcement. WhatsApp's commerce rules bar transacting in "unsafe ingestible supplements" (at WhatsApp's sole discretion) and in certain healthcare products, including medical devices ([Meta policy-enforcement page](https://developers.facebook.com/documentation/business-messaging/whatsapp/policy-enforcement-violations)).
   - A 2022 change may limit the Commerce Policy to catalogue and payment tools (secondary, unverified: [taqnyat](https://blog.taqnyat.sa/en/post/prohibited-cases-in-whatsapp/)).
   - An SMS fallback and several shop platforms mean there is no single gatekeeper.
@@ -894,7 +894,7 @@ Net: 9 of the 12 German launches are evidence-driven and 3 are partly anchored (
 
 **Hard-rule findings**
 - **H1–H3 pass.** Deposits go to the shop's own payment account.
-- **H4 pass, at risk.** Meta's free WhatsApp Business app already has a catalogue and cart (per lens 5). POS and scale vendors could add pre-ordering (JUDGEMENT).
+- **H4 pass (watch).** Meta's free WhatsApp Business app already has a catalogue and cart (per lens 5). POS and scale vendors could add pre-ordering (JUDGEMENT).
 - **H5–H7 pass.**
 - **H8 at risk, not proven.** At least nine branded butcher pre-order apps exist; see 2.0 (d).
 
@@ -1163,7 +1163,7 @@ All 15 web searches are listed. "CONFIRMED", "CONTRADICTED" and "UNVERIFIABLE" r
 | 9 | Stabley is free and includes billing (L1-B, issue a) | **CONFIRMED** that the listing says free core features and billing for stable operators, as a PWA. **Billing depth: UNVERIFIABLE.** | https://alternativeto.net/software/stabley/about/ |
 | 10 | Romanian couriers already offer online payment of cash-on-delivery before delivery (L5-F1, H4 incumbent risk) | **CONTRADICTED** (no courier offers it). FAN Courier says it has no system for buyers to pay online and warns about phishing SMS links in its name. Sameday's 2020 PIN delivery covers prepaid parcels only. | https://www.economica.net/fan-courier-avertizeaza-clientii-asupra-unei-tentative-de-frauda-prin-intermediul-mesajelor-tip-sms_524562.html ; https://profit.ro/povesti-cu-profit/it-c/fan-courier-avertizeaza-clientii-asupra-unei-tentative-de-frauda-prin-intermediul-mesajelor-tip-sms-20324181 ; https://www.wall-street.ro/articol/Auto/252272/sameday-serviciul-de-livrare-fara-interactiune-intre-curier-si-destinatar.html |
 | 11 | German butcher/bakery pre-ordering competitors (L5-F2, issue d) | **CONTRADICTS the "gap".** At least 9 branded butcher pre-order apps share one flow (pickup slot, in-store auto-print, pay at pickup). Vendor **UNVERIFIABLE**. | https://apps.apple.com/app/id1508324294 ; https://apps.apple.com/app/id1482256245 ; https://apps.apple.com/us/app/-/id1549844655 ; https://apps.apple.com/app/id1536133403 ; https://apps.apple.com/app/id1551760911 ; https://apps.apple.com/app/id1589241464 ; https://apps.apple.com/app/id1596895369 ; https://apps.apple.com/de/app/app/id1538437237 ; https://apps.apple.com/de/app/metzgerei-geiger/id1532742300 |
-| 12 | German phone-only daily check-in providers; US demand signals (BASE) | **German providers: none found** (consistent with the brief). **CONFIRMED:** US programmes are mostly free (Maryland, California, Oklahoma); police programmes struggle with enrolment and attrition; false alarms when people forget the call; Doro escalates to its alarm centre. | https://aging.prod.maryland.gov/senior-call-check ; https://www.baxtercountysheriff.com/press-releases/confirmokautomated-wellness-systemseniorsdisabledlivingalone ; https://newsaegis.com/?p=48162 ; https://www.pressreader.com/canada/sherbrooke-record/20180117/281578061072379 ; https://whyy.org/articles/older-delaware-adults-automated-calls/ ; https://www.doro.com/en-ca/services/ |
+| 12 | German phone-only daily check-in providers; US demand signals (BASE) | **German providers: none found** (consistent with the brief). **CONFIRMED:** US programmes are mostly free (Maryland, California, Oklahoma); police programmes struggle with enrolment and attrition; false alarms when people forget the call; Doro escalates to its alarm centre. | https://aging.prod.maryland.gov/senior-call-check ; https://www.baxtercountysheriff.com/press-releases/confirm-okautomated-wellness-systemseniorsdisabledlivingalone ; https://newsaegis.com/?p=48162 ; https://www.pressreader.com/canada/sherbrooke-record/20180117/281578061072379 ; https://whyy.org/articles/older-delaware-adults-automated-calls/ ; https://www.doro.com/en-ca/services/ |
 | 13 | No practice-run vet plans in Germany (L1-A, H8/C3) | **CONFIRMS lens 1's absence** (only insurers returned). **CONFIRMED:** HUK-COBURG launched dog/cat cover on 1 Oct 2026; Allianz says vaccinations, deworming and a microchip can be insured under surgery cover. | https://www.huk.de/presse/nachrichten/aktuelles/huk-coburg-tierkrankenversicherung.html ; https://www.allianz.de/angebot/kooperation/h8w65b/freizeit/tierkrankenversicherung ; https://www.test.de/Haustiere-Was-Hund-und-Katze-wirklich-kosten-4469034-4469041/ |
 | 14 | Care-home-side software for Hilfe zur Pflege files (L4-F1, H8/C3) | **CONFIRMS lens 4's absence** (no software found). **CONFIRMED process facts:** aid only from the application date or the date need became known; incomplete applications secure the date (LSG BW L 7 SO 2479/23); ~2 months to gather documents; online filing only for home-care (ambulant) cases, with upload limits; processing times vary in BW. | https://www.betanet.de/hilfe-zur-pflege.html ; https://www.gegen-hartz.de/urteile/sozialhilfe-formloser-antrag-sichert-anspruch-auf-hilfe-zur-pflege ; https://fimportal.de/api/v0/xzufi-services/L100108/L100108_324474/de/pdf ; https://www.landtag-bw.de/resource/blob/585070/cf26fb5af1795d9bc21e527dfa3bf5bd/17_9244_D.pdf ; https://www.rbk-direkt.de/download/429/hilfe-zur-pflege-in-einem-pflegeheim---fragen-und-antworten |
 | 15 | Dedicated German boarding-stable billing software (L1-B, C3) | **None found**; only generic SEPA tools. Consistent with lens 1, though Stabley (check 9) partly contradicts it. | https://www.jam-software.com/sepa-transfer/editions.shtml ; https://softguide.com/function/sepa |
